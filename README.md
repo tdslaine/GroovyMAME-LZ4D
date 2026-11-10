@@ -1,101 +1,154 @@
-# MAME
+# GroovyMAME-NLC
 
-## What is MAME?
+GroovyMAME 0.289 (Switchres 2.22f) with three small additions for playing on a
+**MiSTer via the Groovy core (nogpu / `-video mister`)**:
 
-MAME is a multi-purpose emulation framework.
+1. **Audio fix:** audio on the MiSTer no longer sounds tinny or metallic.
+2. **GroovyNLC compression:** `-mister_compression nlc` for the GroovyNLC core.
+3. **nonag:** no info or warning screens at startup.
 
-MAME's purpose is to preserve decades of software history. As electronic technology continues to rush forward, MAME prevents this important "vintage" software from being lost and forgotten. This is achieved by documenting the hardware and how it functions. The source code to MAME serves as this documentation. The fact that the software is usable serves primarily to validate the accuracy of the documentation (how else can you prove that you have recreated the hardware faithfully?). Over time, MAME (originally stood for Multiple Arcade Machine Emulator) absorbed the sister-project MESS (Multi Emulator Super System), so MAME now documents a wide variety of (mostly vintage) computers, video game consoles and calculators, in addition to the arcade video games that were its initial focus.
+Apart from these three commits, this is GroovyMAME unchanged. If you don't play
+on a MiSTer, use the official GroovyMAME instead.
 
-## Where can I find out more?
+---
 
-* [Official MAME Development Team Site](https://www.mamedev.org/) (includes binary downloads, wiki, forums, and more)
-* [MAME Testers](https://mametesters.org/) (official bug tracker for MAME)
+## What changed and why
 
-### Community
+All changes are on branch `main` as three commits on top of the official
+`groovymame0289` branch (`953db38f`, release `gm0289sr222f`). Each is
+self-contained and can be cherry-picked on its own.
 
-* [MAME Forums on bannister.org](https://forums.bannister.org/ubbthreads.php?ubb=cfrm&c=5)
-* [r/MAME](https://www.reddit.com/r/MAME/) on Reddit
-* [MAMEWorld Forums](https://www.mameworld.info/ubbthreads/)
+### 1. Audio blocks were sent twice to the MiSTer
 
-## Development
+| | |
+|---|---|
+| Files | `src/emu/sound.cpp`, `src/osd/modules/render/drawnogpu.cpp` |
+| Symptom | With `-video mister`, audio on the MiSTer sounds tinny or metallic. Audio on the PC is fine. RetroArch on the same MiSTer is fine. |
+| Since | GroovyMAME 0.287, commit `834b5554` "Synchronize audio update with VBlank". 0.283 is not affected. |
+| Cause | `screen_device::vblank_end()` also calls `sound().update(0, 0)`. If no speaker produced new samples since the previous update, `m_record_samples` still holds the old count, so `streams_update()` passes the same `m_record_buffer` to the MiSTer (and the WAV writer) again. Every audio block arrives twice. |
+| Fix | Reset `m_record_samples` after the buffer has been passed on, and don't send empty audio blocks to the MiSTer. |
+| Upstream | Submitted as [antonioginer/GroovyMAME#19](https://github.com/antonioginer/GroovyMAME/pull/19). |
 
-![Alt](https://repobeats.axiom.co/api/embed/8461d8ae4630322dafc736fc25782de214b49630.svg "Repobeats analytics image")
-
-### CI status and code scanning
-
-[![CI (Linux)](https://github.com/mamedev/mame/workflows/CI%20(Linux)/badge.svg)](https://github.com/mamedev/mame/actions/workflows/ci-linux.yml) [![CI (Windows](https://github.com/mamedev/mame/workflows/CI%20(Windows)/badge.svg)](https://github.com/mamedev/mame/actions/workflows/ci-windows.yml) [![CI (macOS)](https://github.com/mamedev/mame/workflows/CI%20(macOS)/badge.svg)](https://github.com/mamedev/mame/actions/workflows/ci-macos.yml) [![Compile UI translations](https://github.com/mamedev/mame/workflows/Compile%20UI%20translations/badge.svg)](https://github.com/mamedev/mame/actions/workflows/language.yml) [![Build documentation](https://github.com/mamedev/mame/workflows/Build%20documentation/badge.svg)](https://github.com/mamedev/mame/actions/workflows/docs.yml)  [![Coverity Scan Status](https://scan.coverity.com/projects/5727/badge.svg?flat=1)](https://scan.coverity.com/projects/mame-emulator)
-
-### How to compile?
-
-If you're on a UNIX-like system (including Linux and macOS), it could be as easy as typing
-
-```
-make
-```
-
-for a full build,
+You can check any build for the bug yourself:
 
 ```
-make SUBTARGET=tiny
+mame <game> -seconds_to_run 60 -wavwrite test.wav
 ```
 
-for a build including a small subset of supported systems.
+If the bug is present, the WAV is about 120 s long and every block appears
+twice. With the fix it is 60 s.
 
-See the [Compiling MAME](http://docs.mamedev.org/initialsetup/compilingmame.html) page on our documentation site for more information, including prerequisites for macOS and popular Linux distributions.
+### 2. GroovyNLC compression (`-mister_compression nlc`)
 
-For recent versions of macOS you need to install [Xcode](https://developer.apple.com/xcode/) including command-line tools and [SDL 2.0](https://github.com/libsdl-org/SDL/releases/latest).
+| | |
+|---|---|
+| Files | `src/osd/modules/render/drawnogpu.cpp`, `src/osd/modules/render/nlc_codec.{h,cpp}`, `src/osd/modules/lib/osdobj_common.cpp`, `scripts/src/osd/modules.lua` |
+| What | Near-lossless video codec for the nogpu link: RGB888 to YCoCg-R, MED prediction, Rice packing, 16 px tiles. Frames are smaller than raw, so less data goes over the network to the MiSTer. |
+| Needs | The **GroovyNLC core** on the MiSTer ([verbst/Groovy_MiSTer](https://github.com/verbst/Groovy_MiSTer)). The official Groovy core can't decode NLC. It ignores the extra bits in `CMD_INIT` and receives raw frames, so nothing breaks, but you get no compression. |
+| Codec | `nlc_codec.h` and `nlc_codec.cpp` are copied unchanged from [verbst/Groovy_MiSTer](https://github.com/verbst/Groovy_MiSTer) `api/` (commit `e60f52ad`, 2026-09-11, GPL-2.0). The encoder in that repo is the reference the core's FPGA decoder is checked against, bit for bit. |
+| Glue | Option parsing, the `CMD_INIT` compression byte (codec 2, near level, YCoCg, decode mode 2, Rice) and the call to `nlc_encode()` in `nogpu_blit()`. The bit layout follows verbst's RetroArch GroovyNLC fork, so the core sees the same data from both. If a frame doesn't fit, it is sent raw for that frame. |
 
-For Windows users, we provide a ready-made [build environment](http://www.mamedev.org/tools/) based on MinGW-w64.
+Values:
 
-Visual Studio builds are also possible, but you still need [build environment](http://www.mamedev.org/tools/) based on MinGW-w64.
-In order to generate solution and project files just run:
+| `-mister_compression` | Meaning |
+|---|---|
+| `none` | raw (default) |
+| `lz4`, `lz4hc` | LZ4, as in official GroovyMAME |
+| `nlc` | GroovyNLC, near level 1 (recommended) |
+| `nlc0` | GroovyNLC, lossless |
+| `nlc1` to `nlc3` | GroovyNLC, near level 1 to 3 (higher = smaller, less exact) |
+
+### 3. nonag: skip startup screens
+
+| | |
+|---|---|
+| File | `src/frontend/mame/ui/ui.cpp` |
+| What | The system information and emulation warning screens are never shown. Games start straight into gameplay. |
+| Why | On a cabinet, or on a MiSTer without a keyboard, these screens need a keypress that is often not at hand. |
+
+---
+
+## Usage
+
+Same as official GroovyMAME. For the MiSTer, for example:
 
 ```
-make vs2022
-```
-or use this command to build it directly using msbuild
-
-```
-make vs2022 MSBUILD=1
+mame -video mister -mister_ip 192.168.1.161 -mister_compression nlc ddonpach
 ```
 
-### Coding standard
+Or in `mame.ini`:
 
-MAME source code should be viewed and edited with your editor set to use four spaces per tab. Tabs are used for initial indentation of lines, with one tab used per indentation level. Spaces are used for other alignment within a line.
+```
+video                     mister
+mister_ip                 192.168.1.161
+mister_compression        nlc
+```
 
-Some parts of the code follow [Allman style](https://en.wikipedia.org/wiki/Indent_style#Allman_style); some parts of the code follow [K&R style](https://en.wikipedia.org/wiki/Indent_style#K.26R_style) -- mostly depending on who wrote the original version. **Above all else, be consistent with what you modify, and keep whitespace changes to a minimum when modifying existing source.** For new code, the majority tends to prefer Allman style, so if you don't care much, use that.
+Everything else (`mister_fd_margin`, `mister_interlaced_fb`, Switchres options,
+`-sound`, `-audio_latency` …) works exactly as in official GroovyMAME.
 
-All contributors need to either add a standard header for license info (on new files) or inform us of their wishes regarding which of the following licenses they would like their code to be made available under: the [BSD-3-Clause](http://opensource.org/licenses/BSD-3-Clause) license, the [LGPL-2.1](http://opensource.org/licenses/LGPL-2.1), or the [GPL-2.0](http://opensource.org/licenses/GPL-2.0).
+## Tested
 
-See more specific [C++ Coding Guidelines](https://docs.mamedev.org/contributing/cxx.html) on our documentation web site.
+Tested with a MiSTer DE10-Nano on a 15 kHz CRT, using the GroovyNLC core:
+
+- **Linux** (CachyOS, GCC 16, PipeWire): ddonpach, ddpsdoj and others. NLC runs
+  at full speed, blit about 1 ms. Audio is clean, a 60 s run gives a 60 s WAV.
+- **Windows** (mingw-w64 cross build): only tested under Wine so far
+  (`-listfull`, `-showusage` and a 20 s headless run). Not yet tested on real
+  Windows with a MiSTer.
+
+## Building
+
+Exactly like GroovyMAME or MAME. No extra dependencies.
+
+**Linux**
+
+```
+make -j$(nproc) NOWERROR=1 OPTIMIZE=3 REGENIE=1
+strip -o groovymame mame
+```
+
+**Windows x64 (cross build from Linux with mingw-w64)**
+
+The MiSTer input code uses SDL scancodes, so the SDL2 headers are needed at
+build time (SDL2-devel-2.30.12-mingw from libsdl-org). The SDL DLL is not
+needed at runtime.
+
+```
+make -j$(nproc) TARGETOS=windows OSD=windows PTR64=1 CROSS_BUILD=1 NOWERROR=1 OPTIMIZE=3 REGENIE=1 \
+  OVERRIDE_CC=x86_64-w64-mingw32-gcc OVERRIDE_CXX=x86_64-w64-mingw32-g++ \
+  OVERRIDE_LD=x86_64-w64-mingw32-g++ OVERRIDE_AR=x86_64-w64-mingw32-ar \
+  MINGW64=/usr/x86_64-w64-mingw32 ARCHOPTS=-I<sdl2>/x86_64-w64-mingw32/include
+x86_64-w64-mingw32-strip -o groovymame.exe mame.exe
+```
+
+`ARCHOPTS` only takes effect together with `REGENIE=1`. A native Windows build
+with MSYS2, as described in the MAME docs, should also work but is untested.
+
+## Downloads
+
+Ready-made Linux and Windows x64 builds are on the
+[Releases](../../releases) page, built from exactly this source.
+
+## Who and where from
+
+- **MAME**: the MAME team, [mamedev/mame](https://github.com/mamedev/mame)
+- **GroovyMAME, Switchres, nogpu**: Calamity (Antonio Giner) and
+  contributors, [antonioginer/GroovyMAME](https://github.com/antonioginer/GroovyMAME).
+  The emusync audio/video sync is by intealls and Calamity.
+- **Groovy MiSTer core**: psakhis, [psakhis/Groovy_MiSTer](https://github.com/psakhis/Groovy_MiSTer)
+- **GroovyNLC codec and core**: verbst, [verbst/Groovy_MiSTer](https://github.com/verbst/Groovy_MiSTer)
+- **This fork** (audio fix, NLC integration in GroovyMAME, nonag): tdslaine
+
+Bugs in the three changes above belong here. Everything else belongs upstream
+with GroovyMAME or MAME.
 
 ## License
 
-The MAME project as a whole is made available under the terms of the
-[GNU General Public License, version 2](http://opensource.org/licenses/GPL-2.0)
-or later (GPL-2.0+), since it contains code made available under multiple
-GPL-compatible licenses.  A great majority of the source files (over 90%
-including core files) are made available under the terms of the
-[3-clause BSD License](http://opensource.org/licenses/BSD-3-Clause), and we
-would encourage new contributors to make their contributions available under the
-terms of this license.
+Same as MAME: the project as a whole is under the GNU General Public License,
+version 2 or later. Individual files may be under other licenses, see
+[COPYING](COPYING) and the file headers. `nlc_codec.{h,cpp}` come from a
+GPL-2.0 repository.
 
-Please note that MAME is a registered trademark of Gregory Ember, and permission
-is required to use the "MAME" name, logo, or wordmark.
-
-<a href="http://opensource.org/licenses/GPL-2.0" target="_blank">
-<img align="right" width="100" src="https://opensource.org/wp-content/uploads/2009/06/OSIApproved.svg">
-</a>
-
-    Copyright (c) 1997-2026  MAMEdev and contributors
-
-    This program is free software; you can redistribute it and/or modify it
-    under the terms of the GNU General Public License version 2, as provided in
-    docs/legal/GPL-2.0.
-
-    This program is distributed in the hope that it will be useful, but WITHOUT
-    ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
-    FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
-    more details.
-
-Please see [COPYING](COPYING) for more details.
+MAME is a registered trademark of Gregory Ember. The original MAME readme is in
+[README-MAME.md](README-MAME.md).

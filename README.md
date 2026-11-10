@@ -65,6 +65,7 @@ Values:
 | File | `src/frontend/mame/ui/ui.cpp` |
 | What | The system information and emulation warning screens are never shown. Games start straight into gameplay. |
 | Why | On a cabinet, or on a MiSTer without a keyboard, these screens need a keypress that is often not at hand. |
+| vs. `skip_gameinfo` | MAME's own `-skip_gameinfo` only skips the system information screen. The warning screen ("This system has imperfect graphics/sound …") still waits for a key. There is no option for that, which is what this patch adds. |
 
 ---
 

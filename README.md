@@ -69,24 +69,116 @@ Values:
 
 ---
 
-## Usage
+## Setup
 
-Same as official GroovyMAME. For the MiSTer, for example:
+NLC needs both ends: this GroovyMAME on the PC and the GroovyNLC core on the
+MiSTer. Without the GroovyNLC core, use `mister_compression none` or `lz4`.
+
+### What you need
+
+- A MiSTer (DE10-Nano) with a current MiSTer main install, analog video out to
+  a CRT.
+- **Gigabit Ethernet** between PC and MiSTer. A switch is fine, Wi-Fi is not.
+- A **static IP** on the MiSTer (set it in your router or on the MiSTer). The
+  examples here use `192.168.1.161`.
+
+### 1. MiSTer: install the GroovyNLC core
+
+Use the GroovyNLC release the codec in this fork comes from:
+**v1.4** (2026-09-11) from
+[verbst/Groovy_MiSTer releases](https://github.com/verbst/Groovy_MiSTer/releases).
+The core and the `MiSTer_groovyNLC` binary belong together, always update both.
+
+1. Copy `GroovyNLC_*.rbf` to `/media/fat/_Utility/` and `MiSTer_groovyNLC` to
+   `/media/fat/`. With FTP, use binary mode.
+2. Add this to `/media/fat/MiSTer.ini`:
+
+   ```
+   [GroovyNLC]
+   main=MiSTer_groovyNLC
+   ```
+
+   The section name must be `GroovyNLC` (the core name, not the `.rbf` file
+   name). The official Groovy core can stay installed next to it with its own
+   `[Groovy]` section. Settings you had under `[Groovy]` don't apply to
+   GroovyNLC; move them or use `[Groovy*]`, which matches both.
+3. Start **GroovyNLC** from `_Utility`. A bouncing logo means it is waiting for
+   an emulator. It disappears when frames arrive.
+
+The core listens on UDP **32100** (video, audio, control) and UDP **32101**
+(inputs). Allow both if the PC has a firewall.
+
+### 2. MiSTer: core settings (OSD)
+
+Open the OSD in the core (F12 or the OSD button) and check:
+
+| OSD option | Set to | Why |
+|---|---|---|
+| Video > Volatile framebuffer | **Off** | Required for NLC. With On, the picture freezes or goes black after the first frame. |
+| Video > Framebuffer lead | 1 | Default. Only raise it if the picture smears under load. |
+| Audio > Audio | On | Otherwise no sound from GroovyMAME. |
+| Audio > Desired buffer (ms) | 0 | Lowest latency. Raise only if sound breaks up. |
+| Server > Joysticks | Analog | Pads on the MiSTer are sent to the PC. |
+| Server > PS2 | Keyboard | Only if you want to use a keyboard plugged into the MiSTer (see below). |
+| Server > Jumbo frames | Off | Only turn on if the PC network adapter is also set to MTU 3800. |
+
+Then pick **Save settings**, otherwise the core comes back with defaults next
+time. Server options are read at core start, so reload the core after changing
+them.
+
+### 3. PC: GroovyMAME
+
+On the command line:
 
 ```
 mame -video mister -mister_ip 192.168.1.161 -mister_compression nlc ddonpach
 ```
 
-Or in `mame.ini`:
+Or in `mame.ini` (this is the setup we play with):
 
 ```
 video                     mister
 mister_ip                 192.168.1.161
 mister_compression        nlc
+aspect                    4:3
+keyboardprovider          mister
+joystickprovider          mister
 ```
 
+| Option | Why |
+|---|---|
+| `video mister` | Send frames to the MiSTer instead of drawing on the PC. |
+| `mister_ip` | The MiSTer's static IP. |
+| `mister_compression nlc` | GroovyNLC near level 1. Use `nlc0` for lossless if the network allows it, `nlc2`/`nlc3` only if frames still don't get through. |
+| `aspect 4:3` | Without it GroovyMAME takes the aspect of the PC desktop (16:9) and the picture on the CRT is squeezed. |
+| `keyboardprovider mister`, `joystickprovider mister` | Use the pads (and keyboard) plugged into the MiSTer. Leave on `auto` to use pads on the PC. |
+
 Everything else (`mister_fd_margin`, `mister_interlaced_fb`, Switchres options,
-`-sound`, `-audio_latency` …) works exactly as in official GroovyMAME.
+`-sound`, `-audio_latency` …) works exactly as in official GroovyMAME. Vertical
+games: set the rotation in GroovyMAME (`-rol`/`-ror`) or the CRT's orientation,
+the core only rotates on its scaler output.
+
+### 4. Check that NLC is active
+
+- Start a game with `-verbose`. The log must show
+  `nogpu: compression algorithm nlc, near level 1`. If it says
+  `not supported`, the value of `mister_compression` is misspelled.
+- On the MiSTer, turn on `Verbose` on the Server page and look at
+  `/tmp/groovynlc.log`.
+
+### Troubleshooting
+
+| Symptom | Cause / fix |
+|---|---|
+| Core stays on the logo | Nothing connected. Check `mister_ip`, the network and the firewall (UDP 32100/32101). |
+| Picture freezes or goes black right after the first frame | Volatile framebuffer is On. Set it Off, save, reload the core. |
+| Garbage picture | The core can't decode the stream: official Groovy core, or `.rbf` and `MiSTer_groovyNLC` from different releases. Install both from the same GroovyNLC release, or use `mister_compression none`. |
+| Picture squeezed on the CRT | Set `aspect 4:3`. |
+| Sound tinny or metallic | You are not running a build with the audio fix (see change 1). Check with the WAV test. |
+| No sound | Audio is Off in the core OSD. |
+| Pads/keyboard on the MiSTer do nothing | `joystickprovider`/`keyboardprovider` not set to `mister`, or Joysticks/PS2 Off in the core. |
+| Display taken over by another program | The core serves one client at a time. Close the other emulator. |
+| GroovyMAME doesn't quit on Ctrl+C/SIGTERM in mister mode | Known GroovyMAME behaviour. Quit from the game (Esc) or use `-seconds_to_run N` in scripts. `kill -9` can leave the core hanging, then reload the core. |
 
 ## Tested
 

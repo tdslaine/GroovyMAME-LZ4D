@@ -675,6 +675,9 @@ void mame_ui_manager::display_startup_screens(bool first_time)
 	show_gameinfo = show_warnings = false;
 #endif
 
+	// nonag: never show the system information and emulation warning screens
+	show_gameinfo = show_warnings = false;
+
 	// set up event handlers
 	switch_code_poller poller(machine().input());
 	std::string warning_text;

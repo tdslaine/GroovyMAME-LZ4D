@@ -151,7 +151,7 @@ const options_entry osd_options::s_option_entries[] =
 	{ OSDOPTION_CRT_RANGE "8",                   OSDOPTVAL_AUTO,   core_options::option_type::STRING,    "Add custom CRT range" },
 	{ OSDOPTION_CRT_RANGE "9",                   OSDOPTVAL_AUTO,   core_options::option_type::STRING,    "Add custom CRT range" },
 	{ OSDOPTION_MISTER_IP,                       "0.0.0.0",        core_options::option_type::STRING,    "nogpu device ip address" },
-	{ OSDOPTION_MISTER_COMPRESSION,              OSDOPTVAL_NONE,   core_options::option_type::STRING,    "nogpu device frame compression algorithm (none, lz4)" },
+	{ OSDOPTION_MISTER_COMPRESSION,              OSDOPTVAL_NONE,   core_options::option_type::STRING,    "nogpu device frame compression algorithm (none, lz4, lz4hc, nlc, nlc0-nlc3; nlc needs the GroovyNLC core)" },
 	{ OSDOPTION_MISTER_WINDOW,                   "0",              core_options::option_type::BOOLEAN,   "nogpu show client window (affects performace)" },
 	{ OSDOPTION_MISTER_FD_MARGIN,                "1.5",            core_options::option_type::FLOAT,     "nogpu security margin for automatic frame delay, in ms."},
 	{ OSDOPTION_MISTER_INTERLACED_FB,            "1",              core_options::option_type::BOOLEAN,   "nogpu blit odd/even lines separately."},

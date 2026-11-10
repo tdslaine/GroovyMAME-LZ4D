@@ -37,6 +37,8 @@
 #include <lz4/lz4.h>
 #include <lz4/lz4hc.h>
 
+#include "nlc_codec.h"
+
 #include <switchres/switchres.h>
 
 #define MAX_BUFFER_WIDTH 768
@@ -49,6 +51,9 @@
 
 // nogpu UDP server
 #define UDP_PORT 32100
+
+// GroovyNLC: internal id for -mister_compression nlc[0-3]
+#define NOGPU_COMPRESSION_NLC 3
 
 // Server commands
 #define CMD_CLOSE 1
@@ -177,6 +182,7 @@ private:
 	bool m_initialized = false;
 	bool m_first_blit = true;
 	int m_compression = 0;
+	int m_nlc_near = 1;
 	bool m_show_window = false;
 	bool m_is_internal_fe = false;
 	bool m_autofilter = false;
@@ -547,6 +553,19 @@ bool renderer_nogpu::nogpu_init()
 		m_compression = 0x02;
 		osd_printf_verbose("nogpu: compression algorithm %s\n", compression);
 	}
+	else if (!strncmp(compression, "nlc", 3))
+	{
+		// GroovyNLC (needs the GroovyNLC core): nlc = near level 1, nlc0 = lossless, nlc1-nlc3 = near level
+		const char l = compression[3];
+		if (l == '\0' || (l >= '0' && l <= '3' && compression[4] == '\0'))
+		{
+			m_compression = NOGPU_COMPRESSION_NLC;
+			m_nlc_near = (l == '\0') ? 1 : l - '0';
+			osd_printf_verbose("nogpu: compression algorithm nlc, near level %d\n", m_nlc_near);
+		}
+		else
+			osd_printf_verbose("nogpu: compression algorithm %s not supported\n", compression);
+	}
 	else if (strcmp(compression, "none"))
 		osd_printf_verbose("nogpu: compression algorithm %s not supported\n", compression);
 
@@ -568,7 +587,11 @@ bool renderer_nogpu::nogpu_init()
 
 	osd_printf_verbose("nogpu: Sending CMD_INIT...");
 	cmd_init command;
-	command.compression = m_compression ? 1 : 0;
+	// NLC packs codec 2 + near level + YCoCg + decode mode 2 + Rice; cores without NLC read codec & 3 and fall back to raw
+	if (m_compression == NOGPU_COMPRESSION_NLC)
+		command.compression = 2 | ((m_nlc_near & 0x3) << 2) | (1 << 4) | (2 << 5) | (1 << 7);
+	else
+		command.compression = m_compression ? 1 : 0;
 	command.sound_rate = m_sample_rate;
 	command.sound_channels = m_channels;
 
@@ -906,6 +929,21 @@ void renderer_nogpu::nogpu_blit(uint32_t frame, uint16_t width, uint16_t height)
 		compressed_data_size = LZ4_compress_default((char *)&m_fb[0], (char *)&m_fb_compressed[0], width * height * 3, LZ4_COMPRESSBOUND(MAX_BUFFER_HEIGHT * MAX_BUFFER_WIDTH * 3));
 	else if(m_compression == 2)
 		compressed_data_size = LZ4_compress_HC((char *)&m_fb[0], (char *)&m_fb_compressed[0], width * height * 3, LZ4_COMPRESSBOUND(MAX_BUFFER_HEIGHT * MAX_BUFFER_WIDTH * 3), LZ4HC_CLEVEL_DEFAULT);
+	else if (m_compression == NOGPU_COMPRESSION_NLC)
+	{
+		nlc_params np = {};
+		np.width = width;
+		np.height = height;
+		np.rgb = NLC_RGB888;
+		np.color = NLC_COLOR_YCOCG;
+		np.near_lvl = m_nlc_near;
+		np.pack = NLC_PACK_RICE;
+		np.tile = 16;
+		np.width_bits = 4;
+		np.rice_k = -1;
+		const int encoded = nlc_encode((const uint8_t *)&m_fb[0], (uint8_t *)&m_fb_compressed[0], sizeof(m_fb_compressed), &np);
+		compressed_data_size = (encoded > 0) ? encoded : 0; // 0: send this frame raw
+	}
 
 	// Send CMD_BLIT
 	cmd_blit_vsync command;
@@ -914,7 +952,7 @@ void renderer_nogpu::nogpu_blit(uint32_t frame, uint16_t width, uint16_t height)
 	command.compressed_data_size = compressed_data_size;
 	nogpu_send_command(&command, sizeof(command));
 
-	if (m_compression == 0)
+	if (m_compression == 0 || compressed_data_size == 0)
 		nogpu_send_mtu(&m_fb[0], width * height * 3, 1472);
 
 	else

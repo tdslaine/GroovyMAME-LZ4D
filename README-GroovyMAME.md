@@ -11,7 +11,7 @@ The ultimate goal is to make the emulation indistinguishable from the real hardw
 GroovyMAME's main features compared to official MAME include:
 
 * Automatic generation of custom video timings for CRT monitors, through [Switchres](https://github.com/antonioginer/switchres).
-* Ultra-low latency audio and video synchronization through [emusync](../docs/groovymame/emusync.md).
+* Ultra-low latency audio and video synchronization through [emusync](docs/groovymame/emusync.md).
 * Specialized audio and video backends:
     * `-sound part`: an optimized PortAudio backend, for exclusive-access, ultra-low-latency audio.
     * `-video kmsraw`: a pure-software, front-buffer KMS renderer for Linux.
@@ -25,8 +25,8 @@ Go to the [releases](https://github.com/antonioginer/GroovyMAME/releases) sectio
 
 ## Configuration
 
-* GroovyMAME's [real-time tips and configuration](../docs/groovymame/real-time.md).
-* GroovyMAME's specific [options](../docs/groovymame/configuration.md).
+* GroovyMAME's [real-time tips and configuration](docs/groovymame/real-time.md).
+* GroovyMAME's specific [options](docs/groovymame/configuration.md).
 
 ## Support
 

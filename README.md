@@ -245,5 +245,5 @@ version 2 or later. Individual files may be under other licenses, see
 [COPYING](COPYING) and the file headers. `nlc_codec.{h,cpp}` come from a
 GPL-2.0 repository.
 
-MAME is a registered trademark of Gregory Ember. The original MAME readme is in
-[README-MAME.md](README-MAME.md).
+MAME is a registered trademark of Gregory Ember. The original readmes are in
+[README-GroovyMAME.md](README-GroovyMAME.md) and [README-MAME.md](README-MAME.md).

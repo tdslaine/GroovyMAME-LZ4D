@@ -12,63 +12,6 @@ on a MiSTer, use the official GroovyMAME instead.
 
 ---
 
-## What changed and why
-
-All changes are on branch `main` as three commits on top of the official
-`groovymame0289` branch (`953db38f`, release `gm0289sr222f`). Each is
-self-contained and can be cherry-picked on its own.
-
-### 1. Audio blocks were sent twice to the MiSTer
-
-| | |
-|---|---|
-| Files | `src/emu/sound.cpp`, `src/osd/modules/render/drawnogpu.cpp` |
-| Symptom | With `-video mister`, audio on the MiSTer sounds tinny or metallic. Audio on the PC is fine. RetroArch on the same MiSTer is fine. |
-| Since | GroovyMAME 0.287, commit `834b5554` "Synchronize audio update with VBlank". 0.283 is not affected. |
-| Cause | `screen_device::vblank_end()` also calls `sound().update(0, 0)`. If no speaker produced new samples since the previous update, `m_record_samples` still holds the old count, so `streams_update()` passes the same `m_record_buffer` to the MiSTer (and the WAV writer) again. Every audio block arrives twice. |
-| Fix | Reset `m_record_samples` after the buffer has been passed on, and don't send empty audio blocks to the MiSTer. |
-| Upstream | Submitted as [antonioginer/GroovyMAME#19](https://github.com/antonioginer/GroovyMAME/pull/19). |
-
-You can check any build for the bug yourself:
-
-```
-mame <game> -seconds_to_run 60 -wavwrite test.wav
-```
-
-If the bug is present, the WAV is about 120 s long and every block appears
-twice. With the fix it is 60 s.
-
-### 2. GroovyNLC compression (`-mister_compression nlc`)
-
-| | |
-|---|---|
-| Files | `src/osd/modules/render/drawnogpu.cpp`, `src/osd/modules/render/nlc_codec.{h,cpp}`, `src/osd/modules/lib/osdobj_common.cpp`, `scripts/src/osd/modules.lua` |
-| What | Near-lossless video codec for the nogpu link: RGB888 to YCoCg-R, MED prediction, Rice packing, 16 px tiles. Frames are smaller than raw, so less data goes over the network to the MiSTer. |
-| Needs | The **GroovyNLC core** on the MiSTer ([verbst/Groovy_MiSTer](https://github.com/verbst/Groovy_MiSTer)). The official Groovy core can't decode NLC. It ignores the extra bits in `CMD_INIT` and receives raw frames, so nothing breaks, but you get no compression. |
-| Codec | `nlc_codec.h` and `nlc_codec.cpp` are copied unchanged from [verbst/Groovy_MiSTer](https://github.com/verbst/Groovy_MiSTer) `api/` (commit `e60f52ad`, 2026-09-11, GPL-2.0). The encoder in that repo is the reference the core's FPGA decoder is checked against, bit for bit. |
-| Glue | Option parsing, the `CMD_INIT` compression byte (codec 2, near level, YCoCg, decode mode 2, Rice) and the call to `nlc_encode()` in `nogpu_blit()`. The bit layout follows verbst's RetroArch GroovyNLC fork, so the core sees the same data from both. If a frame doesn't fit, it is sent raw for that frame. |
-
-Values:
-
-| `-mister_compression` | Meaning |
-|---|---|
-| `none` | raw (default) |
-| `lz4`, `lz4hc` | LZ4, as in official GroovyMAME |
-| `nlc` | GroovyNLC, near level 1 (recommended) |
-| `nlc0` | GroovyNLC, lossless |
-| `nlc1` to `nlc3` | GroovyNLC, near level 1 to 3 (higher = smaller, less exact) |
-
-### 3. nonag: skip startup screens
-
-| | |
-|---|---|
-| File | `src/frontend/mame/ui/ui.cpp` |
-| What | The system information and emulation warning screens are never shown. Games start straight into gameplay. |
-| Why | On a cabinet, or on a MiSTer without a keyboard, these screens need a keypress that is often not at hand. |
-| vs. `skip_gameinfo` | MAME's own `-skip_gameinfo` only skips the system information screen. The warning screen ("This system has imperfect graphics/sound …") still waits for a key. There is no option for that, which is what this patch adds. |
-
----
-
 ## Setup
 
 NLC needs both ends: this GroovyMAME on the PC and the GroovyNLC core on the
@@ -179,6 +122,65 @@ the core only rotates on its scaler output.
 | Pads/keyboard on the MiSTer do nothing | `joystickprovider`/`keyboardprovider` not set to `mister`, or Joysticks/PS2 Off in the core. |
 | Display taken over by another program | The core serves one client at a time. Close the other emulator. |
 | GroovyMAME doesn't quit on Ctrl+C/SIGTERM in mister mode | Known GroovyMAME behaviour. Quit from the game (Esc) or use `-seconds_to_run N` in scripts. `kill -9` can leave the core hanging, then reload the core. |
+
+---
+
+## What changed and why
+
+All changes are on branch `main` as three commits on top of the official
+`groovymame0289` branch (`953db38f`, release `gm0289sr222f`). Each is
+self-contained and can be cherry-picked on its own.
+
+### 1. Audio blocks were sent twice to the MiSTer
+
+| | |
+|---|---|
+| Files | `src/emu/sound.cpp`, `src/osd/modules/render/drawnogpu.cpp` |
+| Symptom | With `-video mister`, audio on the MiSTer sounds tinny or metallic. Audio on the PC is fine. RetroArch on the same MiSTer is fine. |
+| Since | GroovyMAME 0.287, commit `834b5554` "Synchronize audio update with VBlank". 0.283 is not affected. |
+| Cause | `screen_device::vblank_end()` also calls `sound().update(0, 0)`. If no speaker produced new samples since the previous update, `m_record_samples` still holds the old count, so `streams_update()` passes the same `m_record_buffer` to the MiSTer (and the WAV writer) again. Every audio block arrives twice. |
+| Fix | Reset `m_record_samples` after the buffer has been passed on, and don't send empty audio blocks to the MiSTer. |
+| Upstream | Submitted as [antonioginer/GroovyMAME#19](https://github.com/antonioginer/GroovyMAME/pull/19). |
+
+You can check any build for the bug yourself:
+
+```
+mame <game> -seconds_to_run 60 -wavwrite test.wav
+```
+
+If the bug is present, the WAV is about 120 s long and every block appears
+twice. With the fix it is 60 s.
+
+### 2. GroovyNLC compression (`-mister_compression nlc`)
+
+| | |
+|---|---|
+| Files | `src/osd/modules/render/drawnogpu.cpp`, `src/osd/modules/render/nlc_codec.{h,cpp}`, `src/osd/modules/lib/osdobj_common.cpp`, `scripts/src/osd/modules.lua` |
+| What | Near-lossless video codec for the nogpu link: RGB888 to YCoCg-R, MED prediction, Rice packing, 16 px tiles. Frames are smaller than raw, so less data goes over the network to the MiSTer. |
+| Needs | The **GroovyNLC core** on the MiSTer ([verbst/Groovy_MiSTer](https://github.com/verbst/Groovy_MiSTer)). The official Groovy core can't decode NLC. It ignores the extra bits in `CMD_INIT` and receives raw frames, so nothing breaks, but you get no compression. |
+| Codec | `nlc_codec.h` and `nlc_codec.cpp` are copied unchanged from [verbst/Groovy_MiSTer](https://github.com/verbst/Groovy_MiSTer) `api/` (commit `e60f52ad`, 2026-09-11, GPL-2.0). The encoder in that repo is the reference the core's FPGA decoder is checked against, bit for bit. |
+| Glue | Option parsing, the `CMD_INIT` compression byte (codec 2, near level, YCoCg, decode mode 2, Rice) and the call to `nlc_encode()` in `nogpu_blit()`. The bit layout follows verbst's RetroArch GroovyNLC fork, so the core sees the same data from both. If a frame doesn't fit, it is sent raw for that frame. |
+
+Values:
+
+| `-mister_compression` | Meaning |
+|---|---|
+| `none` | raw (default) |
+| `lz4`, `lz4hc` | LZ4, as in official GroovyMAME |
+| `nlc` | GroovyNLC, near level 1 (recommended) |
+| `nlc0` | GroovyNLC, lossless |
+| `nlc1` to `nlc3` | GroovyNLC, near level 1 to 3 (higher = smaller, less exact) |
+
+### 3. nonag: skip startup screens
+
+| | |
+|---|---|
+| File | `src/frontend/mame/ui/ui.cpp` |
+| What | The system information and emulation warning screens are never shown. Games start straight into gameplay. |
+| Why | On a cabinet, or on a MiSTer without a keyboard, these screens need a keypress that is often not at hand. |
+| vs. `skip_gameinfo` | MAME's own `-skip_gameinfo` only skips the system information screen. The warning screen ("This system has imperfect graphics/sound …") still waits for a key. There is no option for that, which is what this patch adds. |
+
+---
 
 ## Tested
 

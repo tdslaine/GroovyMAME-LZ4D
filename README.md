@@ -1,27 +1,35 @@
-# GroovyMAME-NLC
+# GroovyMAME LZ4 Delta
 
-GroovyMAME 0.289 (Switchres 2.22f) with three small additions for playing on a
-**MiSTer via the Groovy core (nogpu / `-video mister`)**:
+GroovyMAME 0.289 (Switchres 2.22f) for playing on a **MiSTer via the Groovy
+core (nogpu / `-video mister`)**, with:
 
-1. **Audio fix:** audio on the MiSTer no longer sounds tinny or metallic.
-2. **GroovyNLC compression:** `-mister_compression nlc` for the GroovyNLC core.
-3. **nonag:** no info or warning screens at startup.
+1. **LZ4 delta frames:** `-mister_compression lz4_delta` (and `lz4hc_delta`).
+   Each frame can be sent as the difference to the previous one, so parts of
+   the picture that don't change cost almost nothing. Works with the **stock
+   Groovy / GroovyNLC core**, which already decodes delta frames; GroovyMAME
+   just never sent them. In real kof98 gameplay: 3.1x → 5.4x compression,
+   33.6 → 19.0 Mbit/s, still 60 fps (see [results](#results-so-far)).
+2. **Audio fix:** audio on the MiSTer no longer sounds tinny or metallic
+   (every audio block was sent twice since GroovyMAME 0.287, see below).
 
-Apart from these three commits, this is GroovyMAME unchanged. If you don't play
-on a MiSTer, use the official GroovyMAME instead.
+Also included:
 
-> **Branch `qoi` (this branch) is an experimental test build** on top of that:
-> LZ4/LZ4HC delta frames, QOI per line, a stats overlay and Ctrl+C support.
-> See [Experimental: codec test build](#experimental-codec-test-build) below.
-> Not part of the release, not yet checked on a CRT for every mode.
+- `-mister_stats`: compression ratio, Mbit/s, encode time and CPU load on
+  screen, once per second
+- Ctrl+C / SIGTERM quits cleanly with `-video mister` (Linux)
+- GroovyNLC compression (`-mister_compression nlc`) for the GroovyNLC core
+- QOI per line (`-mister_compression qoi`, experimental, needs a test core)
+- nonag: no info or warning screens at startup
+
+This is a test build (branch `lz4-delta`), made with the help of an AI
+assistant. Not every mode has been checked on a CRT yet. If you don't play on
+a MiSTer, use the official GroovyMAME instead.
 
 ---
 
-## Experimental: codec test build
+## LZ4 delta, stats and the other new options
 
-Everything in this section is on branch `qoi` only.
-
-### New options
+### Options
 
 | Option | What it does | Core needed |
 |---|---|---|
@@ -151,15 +159,15 @@ them.
 On the command line:
 
 ```
-mame -video mister -mister_ip 192.168.1.100 -mister_compression nlc ddonpach
+mame -video mister -mister_ip 192.168.1.100 -mister_compression lz4_delta ddonpach
 ```
 
-Or in `mame.ini` (this is the setup we play with):
+Or in `mame.ini`:
 
 ```
 video                     mister
 mister_ip                 192.168.1.100
-mister_compression        nlc
+mister_compression        lz4_delta
 aspect                    4:3
 keyboardprovider          mister
 joystickprovider          mister
@@ -169,7 +177,7 @@ joystickprovider          mister
 |---|---|
 | `video mister` | Send frames to the MiSTer instead of drawing on the PC. |
 | `mister_ip` | The MiSTer's static IP. |
-| `mister_compression nlc` | GroovyNLC near level 1. Use `nlc0` for lossless if the network allows it, `nlc2`/`nlc3` only if frames still don't get through. |
+| `mister_compression lz4_delta` | LZ4 with delta frames, works on the stock Groovy and GroovyNLC core. Alternatives: `lz4`, `nlc` (GroovyNLC core only, better suited for video/3D than for 2D sprites). |
 | `aspect 4:3` | Without it GroovyMAME takes the aspect of the PC desktop (16:9) and the picture on the CRT is squeezed. |
 | `keyboardprovider mister`, `joystickprovider mister` | Use the pads (and keyboard) plugged into the MiSTer. Leave on `auto` to use pads on the PC. |
 
@@ -312,7 +320,7 @@ Ready-made Linux and Windows x64 builds are on the
 - **GroovyNLC codec and core**: verbst, [verbst/Groovy_MiSTer](https://github.com/verbst/Groovy_MiSTer)
 - **QOI line format, encoder and FPGA decoder**: substring, [substring/GroovyTaNGer](https://github.com/substring/GroovyTaNGer) (`qoiline.h` and the decoder are MIT)
 - **Delta frame format**: psakhis' groovymister lib, as used by MiSTerCast
-- **This fork** (audio fix, NLC integration in GroovyMAME, nonag; on branch `qoi`: delta frames, QOI glue, stats, Ctrl+C): tdslaine
+- **This fork** (audio fix, NLC integration in GroovyMAME, nonag; on branch `lz4-delta`: delta frames, QOI glue, stats, Ctrl+C): tdslaine
 
 Bugs in the three changes above belong here. Everything else belongs upstream
 with GroovyMAME or MAME.

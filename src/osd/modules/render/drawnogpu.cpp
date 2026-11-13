@@ -190,6 +190,12 @@ private:
 	int m_compression = 0;
 	int m_nlc_near = 1;
 	bool m_show_window = false;
+
+	// -mister_stats: per-second compression statistics
+	bool m_stats = false;
+	osd_ticks_t m_st_start = 0;
+	double m_st_raw = 0, m_st_sent = 0, m_st_enc_ms = 0, m_st_min_ratio = 0;
+	int m_st_frames = 0, m_st_fallback = 0;
 	bool m_is_internal_fe = false;
 	bool m_autofilter = false;
 	bool m_bilinear = false;
@@ -240,6 +246,7 @@ private:
 	bool nogpu_wait_ack(double timeout);
 	bool nogpu_wait_status(nogpu_blit_status *status, double timeout);
 	void nogpu_register_frametime(osd_ticks_t frametime);
+	void nogpu_stats(uint32_t raw_size, uint32_t sent_size, osd_ticks_t enc_ticks);
 
 	// emusync manager
 	emusync &m_sync;
@@ -615,6 +622,7 @@ bool renderer_nogpu::nogpu_init()
 
 	// Hide window optionally
 	m_show_window = options.mister_window();
+	m_stats = options.mister_stats();
 	#if defined(OSD_WINDOWS)
 		if (!m_show_window)
 		{
@@ -912,6 +920,56 @@ void renderer_nogpu::nogpu_send_lz4(char *buffer, int bytes_to_send, int block_s
 }
 */
 //============================================================
+//  renderer_nogpu::nogpu_stats
+//  -mister_stats: once per second, show and log the compression
+//  ratio (average and worst frame), the data rate on the wire and
+//  the encode time per frame
+//============================================================
+
+void renderer_nogpu::nogpu_stats(uint32_t raw_size, uint32_t sent_size, osd_ticks_t enc_ticks)
+{
+	const bool fallback = (m_compression != 0 && sent_size == 0);
+	const double sent = (m_compression == 0 || sent_size == 0) ? raw_size : sent_size;
+	const double ratio = raw_size / sent;
+	const osd_ticks_t now = osd_ticks();
+
+	if (m_st_frames == 0)
+	{
+		m_st_start = now;
+		m_st_min_ratio = ratio;
+	}
+	m_st_frames++;
+	m_st_raw += raw_size;
+	m_st_sent += sent;
+	m_st_enc_ms += get_ms(enc_ticks);
+	m_st_min_ratio = std::min(m_st_min_ratio, ratio);
+	if (fallback)
+		m_st_fallback++;
+
+	const double secs = double(now - m_st_start) / osd_ticks_per_second();
+	if (secs < 1.0)
+		return;
+
+	static const char *const names[] = { "RAW", "LZ4", "LZ4HC", "NLC", "QOI" };
+	const char *name = (m_compression >= 0 && m_compression <= 4) ? names[m_compression] : "?";
+	char nlc_level[8] = "";
+	if (m_compression == NOGPU_COMPRESSION_NLC)
+		snprintf(nlc_level, sizeof(nlc_level), "%d", m_nlc_near);
+
+	char text[160];
+	snprintf(text, sizeof(text), "%s%s %.1fx (min %.1fx)  %.1f Mbit/s  enc %.2f ms  %d fps%s",
+		name, nlc_level, m_st_raw / m_st_sent, m_st_min_ratio,
+		m_st_sent * 8.0 / secs / 1e6, m_st_enc_ms / m_st_frames, int(m_st_frames / secs + 0.5),
+		m_st_fallback ? util::string_format("  raw frames %d", m_st_fallback).c_str() : "");
+	window().machine().popmessage("%s", text);
+	osd_printf_info("nogpu stats: %s\n", text);
+
+	m_st_frames = 0;
+	m_st_raw = m_st_sent = m_st_enc_ms = 0;
+	m_st_fallback = 0;
+}
+
+//============================================================
 //  renderer_nogpu::nogpu_blit
 //============================================================
 
@@ -940,6 +998,8 @@ void renderer_nogpu::nogpu_blit(uint32_t frame, uint16_t width, uint16_t height)
 	// Update vsync scanline
 	m_vsync_scanline = std::min<int>((m_current_mode.vtotal) * m_frame_delay + vsync_offset + 1, m_current_mode.vtotal);
 
+	const osd_ticks_t enc_start = osd_ticks();
+
 	if (m_compression == 1)
 		compressed_data_size = LZ4_compress_default((char *)&m_fb[0], (char *)&m_fb_compressed[0], width * height * 3, LZ4_COMPRESSBOUND(MAX_BUFFER_HEIGHT * MAX_BUFFER_WIDTH * 3));
 	else if(m_compression == 2)
@@ -966,6 +1026,9 @@ void renderer_nogpu::nogpu_blit(uint32_t frame, uint16_t width, uint16_t height)
 		for (int y = 0; y < height; y++)
 			compressed_data_size += qoiline_encode((const uint8_t *)&m_fb[y * line_bytes], width, QOILINE_RGB888, (uint8_t *)&m_fb_compressed[compressed_data_size]);
 	}
+
+	if (m_stats)
+		nogpu_stats(width * height * 3, compressed_data_size, osd_ticks() - enc_start);
 
 	// Send CMD_BLIT
 	cmd_blit_vsync command;

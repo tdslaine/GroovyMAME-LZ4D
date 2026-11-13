@@ -39,6 +39,10 @@
 
 #include "nlc_codec.h"
 
+// QOI per line (substring/GroovyTaNGer docs/qoi_line_format.md), single-header library, MIT
+#define QOILINE_IMPLEMENTATION
+#include "qoiline.h"
+
 #include <switchres/switchres.h>
 
 #define MAX_BUFFER_WIDTH 768
@@ -54,6 +58,8 @@
 
 // GroovyNLC: internal id for -mister_compression nlc[0-3]
 #define NOGPU_COMPRESSION_NLC 3
+// QOI per line: internal id for -mister_compression qoi (CMD_INIT codec 3, test build)
+#define NOGPU_COMPRESSION_QOI 4
 
 // Server commands
 #define CMD_CLOSE 1
@@ -566,6 +572,12 @@ bool renderer_nogpu::nogpu_init()
 		else
 			osd_printf_verbose("nogpu: compression algorithm %s not supported\n", compression);
 	}
+	else if (!strcmp(compression, "qoi"))
+	{
+		// QOI per line (needs a core that decodes CMD_INIT codec 3)
+		m_compression = NOGPU_COMPRESSION_QOI;
+		osd_printf_verbose("nogpu: compression algorithm qoi (per line)\n");
+	}
 	else if (strcmp(compression, "none"))
 		osd_printf_verbose("nogpu: compression algorithm %s not supported\n", compression);
 
@@ -590,6 +602,9 @@ bool renderer_nogpu::nogpu_init()
 	// NLC packs codec 2 + near level + YCoCg + decode mode 2 + Rice; cores without NLC read codec & 3 and fall back to raw
 	if (m_compression == NOGPU_COMPRESSION_NLC)
 		command.compression = 2 | ((m_nlc_near & 0x3) << 2) | (1 << 4) | (2 << 5) | (1 << 7);
+	// QOI: codec 3, same decode mode 2 as NLC
+	else if (m_compression == NOGPU_COMPRESSION_QOI)
+		command.compression = 3 | (2 << 5);
 	else
 		command.compression = m_compression ? 1 : 0;
 	command.sound_rate = m_sample_rate;
@@ -943,6 +958,13 @@ void renderer_nogpu::nogpu_blit(uint32_t frame, uint16_t width, uint16_t height)
 		np.rice_k = -1;
 		const int encoded = nlc_encode((const uint8_t *)&m_fb[0], (uint8_t *)&m_fb_compressed[0], sizeof(m_fb_compressed), &np);
 		compressed_data_size = (encoded > 0) ? encoded : 0; // 0: send this frame raw
+	}
+	else if (m_compression == NOGPU_COMPRESSION_QOI)
+	{
+		// every line on its own: 2-byte header + QOI, or the raw line when QOI is not shorter
+		const size_t line_bytes = width * 3;
+		for (int y = 0; y < height; y++)
+			compressed_data_size += qoiline_encode((const uint8_t *)&m_fb[y * line_bytes], width, QOILINE_RGB888, (uint8_t *)&m_fb_compressed[compressed_data_size]);
 	}
 
 	// Send CMD_BLIT

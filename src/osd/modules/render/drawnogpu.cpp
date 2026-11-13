@@ -200,6 +200,12 @@ private:
 	int m_nlc_near = 1;
 	bool m_show_window = false;
 
+	// QOI: skip lines that are unchanged since the last sent frame (header 0x8000)
+	bool m_qoi_skip = true;
+	bool m_prev_valid = false;
+	int m_prev_w = 0, m_prev_h = 0, m_keyframe_cnt = 0;
+	char m_fb_prev[MAX_BUFFER_HEIGHT * MAX_BUFFER_WIDTH * 3];
+
 	// -mister_stats: per-second compression statistics
 	bool m_stats = false;
 	osd_ticks_t m_st_start = 0;
@@ -604,11 +610,13 @@ bool renderer_nogpu::nogpu_init()
 		else
 			osd_printf_verbose("nogpu: compression algorithm %s not supported\n", compression);
 	}
-	else if (!strcmp(compression, "qoi"))
+	else if (!strcmp(compression, "qoi") || !strcmp(compression, "qoi_noskip"))
 	{
-		// QOI per line (needs a core that decodes CMD_INIT codec 3)
+		// QOI per line (needs a core that decodes CMD_INIT codec 3); qoi also skips unchanged lines
 		m_compression = NOGPU_COMPRESSION_QOI;
-		osd_printf_verbose("nogpu: compression algorithm qoi (per line)\n");
+		m_qoi_skip = !strcmp(compression, "qoi");
+		m_prev_valid = false;
+		osd_printf_verbose("nogpu: compression algorithm qoi (per line%s)\n", m_qoi_skip ? ", skip unchanged lines" : "");
 	}
 	else if (strcmp(compression, "none"))
 		osd_printf_verbose("nogpu: compression algorithm %s not supported\n", compression);
@@ -976,7 +984,7 @@ void renderer_nogpu::nogpu_stats(uint32_t raw_size, uint32_t sent_size, osd_tick
 		return;
 
 	static const char *const names[] = { "RAW", "LZ4", "LZ4HC", "NLC", "QOI" };
-	const char *name = (m_compression >= 0 && m_compression <= 4) ? names[m_compression] : "?";
+	const char *name = (m_compression == NOGPU_COMPRESSION_QOI && m_qoi_skip) ? "QOI+skip" : (m_compression >= 0 && m_compression <= 4) ? names[m_compression] : "?";
 	char nlc_level[8] = "";
 	if (m_compression == NOGPU_COMPRESSION_NLC)
 		snprintf(nlc_level, sizeof(nlc_level), "%d", m_nlc_near);
@@ -1046,10 +1054,32 @@ void renderer_nogpu::nogpu_blit(uint32_t frame, uint16_t width, uint16_t height)
 	}
 	else if (m_compression == NOGPU_COMPRESSION_QOI)
 	{
-		// every line on its own: 2-byte header + QOI, or the raw line when QOI is not shorter
+		// every line on its own: 2-byte header + QOI, or the raw line when QOI is not shorter.
+		// With skipping, a line equal to the last sent frame is only the header 0x8000 and the
+		// core keeps it in the framebuffer. Needs word-aligned lines and a progressive mode;
+		// a full frame goes out every 60 frames and after any size change.
 		const size_t line_bytes = width * 3;
+		const bool skip = m_qoi_skip && m_prev_valid && m_prev_w == width && m_prev_h == height
+			&& (line_bytes % 8) == 0 && !m_current_mode.interlace && m_keyframe_cnt < 60;
 		for (int y = 0; y < height; y++)
-			compressed_data_size += qoiline_encode((const uint8_t *)&m_fb[y * line_bytes], width, QOILINE_RGB888, (uint8_t *)&m_fb_compressed[compressed_data_size]);
+		{
+			const char *line = &m_fb[y * line_bytes];
+			if (skip && !memcmp(line, &m_fb_prev[y * line_bytes], line_bytes))
+			{
+				m_fb_compressed[compressed_data_size++] = 0x00;
+				m_fb_compressed[compressed_data_size++] = (char)0x80;
+			}
+			else
+				compressed_data_size += qoiline_encode((const uint8_t *)line, width, QOILINE_RGB888, (uint8_t *)&m_fb_compressed[compressed_data_size]);
+		}
+		if (m_qoi_skip)
+		{
+			memcpy(m_fb_prev, m_fb, line_bytes * height);
+			m_prev_valid = true;
+			m_prev_w = width;
+			m_prev_h = height;
+			m_keyframe_cnt = skip ? m_keyframe_cnt + 1 : 0;
+		}
 	}
 
 	if (m_stats)

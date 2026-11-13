@@ -203,10 +203,12 @@ private:
 	bool m_show_window = false;
 
 	// QOI: skip lines that are unchanged since the last sent frame (header 0x8000)
+	// With interlaced fields the core writes even and odd fields to separate buffers, so keep
+	// one reference per buffer (slot = frame parity, which is what the core uses to pick it).
 	bool m_qoi_skip = true;
-	bool m_prev_valid = false;
-	int m_prev_w = 0, m_prev_h = 0, m_keyframe_cnt = 0;
-	char m_fb_prev[MAX_BUFFER_HEIGHT * MAX_BUFFER_WIDTH * 3];
+	bool m_prev_valid[2] = { false, false };
+	int m_prev_w[2] = { 0, 0 }, m_prev_h[2] = { 0, 0 }, m_keyframe_cnt[2] = { 0, 0 };
+	char m_fb_prev[2][MAX_BUFFER_HEIGHT * MAX_BUFFER_WIDTH * 3];
 
 	// -mister_stats: per-second compression statistics
 	bool m_stats = false;
@@ -619,7 +621,7 @@ bool renderer_nogpu::nogpu_init()
 		// QOI per line (needs a core that decodes CMD_INIT codec 3); qoi also skips unchanged lines
 		m_compression = NOGPU_COMPRESSION_QOI;
 		m_qoi_skip = !strcmp(compression, "qoi");
-		m_prev_valid = false;
+		m_prev_valid[0] = m_prev_valid[1] = false;
 		osd_printf_verbose("nogpu: compression algorithm qoi (per line%s)\n", m_qoi_skip ? ", skip unchanged lines" : "");
 	}
 	else if (strcmp(compression, "none"))
@@ -1096,15 +1098,17 @@ void renderer_nogpu::nogpu_blit(uint32_t frame, uint16_t width, uint16_t height)
 	{
 		// every line on its own: 2-byte header + QOI, or the raw line when QOI is not shorter.
 		// With skipping, a line equal to the last sent frame is only the header 0x8000 and the
-		// core keeps it in the framebuffer. Needs word-aligned lines and a progressive mode;
-		// a full frame goes out every 60 frames and after any size change.
+		// core keeps it in the framebuffer. Needs word-aligned lines; interlaced fields compare
+		// against the last field of the same parity. A full frame goes out every 60 frames per
+		// slot and after any size change.
 		const size_t line_bytes = width * 3;
-		const bool skip = m_qoi_skip && m_prev_valid && m_prev_w == width && m_prev_h == height
-			&& (line_bytes % 8) == 0 && !m_current_mode.interlace && m_keyframe_cnt < 60;
+		const int slot = (m_current_mode.interlace && m_interlaced_fb) ? (frame & 1) : 0;
+		const bool skip = m_qoi_skip && m_prev_valid[slot] && m_prev_w[slot] == width && m_prev_h[slot] == height
+			&& (line_bytes % 8) == 0 && m_keyframe_cnt[slot] < 60;
 		for (int y = 0; y < height; y++)
 		{
 			const char *line = &m_fb[y * line_bytes];
-			if (skip && !memcmp(line, &m_fb_prev[y * line_bytes], line_bytes))
+			if (skip && !memcmp(line, &m_fb_prev[slot][y * line_bytes], line_bytes))
 			{
 				m_fb_compressed[compressed_data_size++] = 0x00;
 				m_fb_compressed[compressed_data_size++] = (char)0x80;
@@ -1114,11 +1118,11 @@ void renderer_nogpu::nogpu_blit(uint32_t frame, uint16_t width, uint16_t height)
 		}
 		if (m_qoi_skip)
 		{
-			memcpy(m_fb_prev, m_fb, line_bytes * height);
-			m_prev_valid = true;
-			m_prev_w = width;
-			m_prev_h = height;
-			m_keyframe_cnt = skip ? m_keyframe_cnt + 1 : 0;
+			memcpy(m_fb_prev[slot], m_fb, line_bytes * height);
+			m_prev_valid[slot] = true;
+			m_prev_w[slot] = width;
+			m_prev_h[slot] = height;
+			m_keyframe_cnt[slot] = skip ? m_keyframe_cnt[slot] + 1 : 0;
 		}
 	}
 

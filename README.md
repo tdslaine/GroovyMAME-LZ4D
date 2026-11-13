@@ -25,6 +25,30 @@ This is a test build (branch `lz4-delta`), made with the help of an AI
 assistant. Not every mode has been checked on a CRT yet. If you don't play on
 a MiSTer, use the official GroovyMAME instead.
 
+## Codec comparison
+
+Real gameplay, **kof98 at 240p**: the same savestate and the same
+pseudo-random inputs for every run, so every codec gets exactly the same
+frames. 60 s each, GroovyMAME on a Linux PC sending to a DE10-Nano over
+gigabit. Ratio = raw size / sent size, higher is better.
+
+| Codec | `-mister_compression` | Ratio | Worst frame | Avg Mbit/s | Encode per frame | fps | CPU (one core) | Core |
+|---|---|---|---|---|---|---|---|---|
+| Raw | `none` | 1.0x | 1.0x | 103.5 | – | 60 | 24 % | any |
+| LZ4 | `lz4` | 3.1x | 2.7x | 33.6 | 0.28 ms | 60 | 24 % | any |
+| **LZ4 + delta** | **`lz4_delta`** | **5.4x** | 2.7x | **19.0** | 0.57 ms | **60** | 24 % | **any (stock)** |
+| LZ4HC | `lz4hc` | 4.8x | 4.2x | 21.8 | 8.4 ms | 60 | 70 % | any |
+| LZ4HC + delta | `lz4hc_delta` | 7.7x | 4.2x | 12.4 | 15.0 ms | **55** (drops) | 91 % | any (stock) |
+| QOI | `qoi_noskip` | 3.0x | 2.6x | 34.8 | 0.54 ms | 60 | 25 % | QOI test core |
+| QOI + line skip | `qoi` | 4.0x | 2.6x | 26.2 | 0.42 ms | 60 | 24 % | QOI test core |
+| NLC | `nlc` | 1.8x | 1.7x | 57.1 | 1.23 ms | 60 | 41 % | GroovyNLC core |
+
+**In short:** LZ4 + delta packs best of everything that keeps 60 fps, costs
+no extra CPU and runs on the stock core. LZ4HC + delta packs even more but is
+already too slow at 240p. NLC is made for video and 3D, not for 2D sprites.
+Scene changes (worst frame) cost the same with or without delta. More games
+(attract mode, 3D and 480i/480p) are in [Results so far](#results-so-far).
+
 ---
 
 ## LZ4 delta, stats and the other new options

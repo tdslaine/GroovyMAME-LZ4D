@@ -25,6 +25,9 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <csignal>
+#include <sys/resource.h>
+#include <cstdio>
 #endif
 
 // MAMEOS headers
@@ -39,7 +42,19 @@
 
 #include "nlc_codec.h"
 
+// QOI per line (substring/GroovyTaNGer docs/qoi_line_format.md), single-header library, MIT
+#define QOILINE_IMPLEMENTATION
+#include "qoiline.h"
+
 #include <switchres/switchres.h>
+
+#ifndef _WIN32
+// Ctrl+C / kill: with -video mister there is no SDL window, so SDL's quit event never
+// reaches MAME and the process could only be killed hard. Catch the signals ourselves
+// and ask the machine to exit at the next frame.
+static volatile std::sig_atomic_t s_nogpu_quit = 0;
+static void nogpu_signal_handler(int) { s_nogpu_quit = 1; }
+#endif
 
 #define MAX_BUFFER_WIDTH 768
 #define MAX_BUFFER_HEIGHT 576
@@ -54,6 +69,12 @@
 
 // GroovyNLC: internal id for -mister_compression nlc[0-3]
 #define NOGPU_COMPRESSION_NLC 3
+// QOI per line: internal id for -mister_compression qoi (CMD_INIT codec 3, test build)
+#define NOGPU_COMPRESSION_QOI 4
+// LZ4 / LZ4HC + delta frames (as groovymister's GM_CODEC 2/4): CMD_INIT says LZ4, each blit may
+// carry the wrapping difference to the previous frame of the same field, the core adds it back
+#define NOGPU_COMPRESSION_LZ4_DELTA 5
+#define NOGPU_COMPRESSION_LZ4HC_DELTA 6
 
 // Server commands
 #define CMD_CLOSE 1
@@ -62,6 +83,7 @@
 #define CMD_AUDIO 4
 #define CMD_GET_STATUS 5
 #define CMD_BLIT_VSYNC 6
+#define CMD_BLIT_FIELD_VSYNC 7
 
 // Status bits
 #define VRAM_READY       1 << 0
@@ -184,6 +206,21 @@ private:
 	int m_compression = 0;
 	int m_nlc_near = 1;
 	bool m_show_window = false;
+
+	// QOI: skip lines that are unchanged since the last sent frame (header 0x8000)
+	// With interlaced fields the core writes even and odd fields to separate buffers, so keep
+	// one reference per buffer (slot = frame parity, which is what the core uses to pick it).
+	bool m_qoi_skip = true;
+	bool m_prev_valid[2] = { false, false };
+	int m_prev_w[2] = { 0, 0 }, m_prev_h[2] = { 0, 0 }, m_keyframe_cnt[2] = { 0, 0 };
+	char m_fb_prev[2][MAX_BUFFER_HEIGHT * MAX_BUFFER_WIDTH * 3];
+
+	// -mister_stats: per-second compression statistics
+	bool m_stats = false;
+	osd_ticks_t m_st_start = 0;
+	double m_st_raw = 0, m_st_sent = 0, m_st_enc_ms = 0, m_st_min_ratio = 0;
+	int m_st_frames = 0, m_st_fallback = 0;
+	double m_st_cpu0 = 0, m_st_sys_busy0 = 0, m_st_sys_total0 = 0;
 	bool m_is_internal_fe = false;
 	bool m_autofilter = false;
 	bool m_bilinear = false;
@@ -221,6 +258,8 @@ private:
 
 	char m_fb[MAX_BUFFER_HEIGHT * MAX_BUFFER_WIDTH * 3];
 	char m_fb_compressed[LZ4_COMPRESSBOUND(MAX_BUFFER_HEIGHT * MAX_BUFFER_WIDTH * 3)];
+	char m_fb_delta[MAX_BUFFER_HEIGHT * MAX_BUFFER_WIDTH * 3];
+	char m_fb_compressed_delta[LZ4_COMPRESSBOUND(MAX_BUFFER_HEIGHT * MAX_BUFFER_WIDTH * 3)];
 	char inp_buf[2][MAX_LZ4_BLOCK + 1];
 	uint16_t m_ab[MAX_SAMPLE_RATE / STREAMS_UPDATE_FREQUENCY * 2];
 
@@ -234,6 +273,9 @@ private:
 	bool nogpu_wait_ack(double timeout);
 	bool nogpu_wait_status(nogpu_blit_status *status, double timeout);
 	void nogpu_register_frametime(osd_ticks_t frametime);
+	void nogpu_stats(uint32_t raw_size, uint32_t sent_size, osd_ticks_t enc_ticks);
+	void nogpu_blit_delta(uint32_t frame, uint16_t width, uint16_t height, osd_ticks_t enc_start);
+	static void nogpu_cpu_sample(double &proc_s, double &sys_busy, double &sys_total);
 
 	// emusync manager
 	emusync &m_sync;
@@ -382,6 +424,14 @@ int renderer_nogpu::draw(const int update)
 	}
 	#endif
 
+	#ifndef _WIN32
+	if (s_nogpu_quit)
+	{
+		s_nogpu_quit = 0;
+		window().machine().schedule_exit();
+	}
+	#endif
+
 	// initialize nogpu right before first blit
 	if (m_first_blit && !m_initialized)
 	{
@@ -476,6 +526,14 @@ bool renderer_nogpu::nogpu_init()
 {
 	int result;
 
+	#ifndef _WIN32
+		struct sigaction sa = {};
+		sa.sa_handler = nogpu_signal_handler;
+		sigemptyset(&sa.sa_mask);
+		sigaction(SIGINT, &sa, nullptr);
+		sigaction(SIGTERM, &sa, nullptr);
+	#endif
+
 	#if defined(OSD_WINDOWS)
 		windows_options &options = downcast<windows_options &>(window().machine().options());
 	#elif defined(OSD_SDL)
@@ -566,6 +624,20 @@ bool renderer_nogpu::nogpu_init()
 		else
 			osd_printf_verbose("nogpu: compression algorithm %s not supported\n", compression);
 	}
+	else if (!strcmp(compression, "lz4_delta") || !strcmp(compression, "lz4hc_delta"))
+	{
+		m_compression = !strcmp(compression, "lz4_delta") ? NOGPU_COMPRESSION_LZ4_DELTA : NOGPU_COMPRESSION_LZ4HC_DELTA;
+		m_prev_valid[0] = m_prev_valid[1] = false;
+		osd_printf_verbose("nogpu: compression algorithm %s\n", compression);
+	}
+	else if (!strcmp(compression, "qoi") || !strcmp(compression, "qoi_noskip"))
+	{
+		// QOI per line (needs a core that decodes CMD_INIT codec 3); qoi also skips unchanged lines
+		m_compression = NOGPU_COMPRESSION_QOI;
+		m_qoi_skip = !strcmp(compression, "qoi");
+		m_prev_valid[0] = m_prev_valid[1] = false;
+		osd_printf_verbose("nogpu: compression algorithm qoi (per line%s)\n", m_qoi_skip ? ", skip unchanged lines" : "");
+	}
 	else if (strcmp(compression, "none"))
 		osd_printf_verbose("nogpu: compression algorithm %s not supported\n", compression);
 
@@ -590,6 +662,11 @@ bool renderer_nogpu::nogpu_init()
 	// NLC packs codec 2 + near level + YCoCg + decode mode 2 + Rice; cores without NLC read codec & 3 and fall back to raw
 	if (m_compression == NOGPU_COMPRESSION_NLC)
 		command.compression = 2 | ((m_nlc_near & 0x3) << 2) | (1 << 4) | (2 << 5) | (1 << 7);
+	// QOI: codec 3, same decode mode 2 as NLC
+	else if (m_compression == NOGPU_COMPRESSION_QOI)
+		command.compression = 3 | (2 << 5);
+	else if (m_compression == NOGPU_COMPRESSION_LZ4_DELTA || m_compression == NOGPU_COMPRESSION_LZ4HC_DELTA)
+		command.compression = 1;
 	else
 		command.compression = m_compression ? 1 : 0;
 	command.sound_rate = m_sample_rate;
@@ -600,6 +677,7 @@ bool renderer_nogpu::nogpu_init()
 
 	// Hide window optionally
 	m_show_window = options.mister_window();
+	m_stats = options.mister_stats();
 	#if defined(OSD_WINDOWS)
 		if (!m_show_window)
 		{
@@ -897,6 +975,178 @@ void renderer_nogpu::nogpu_send_lz4(char *buffer, int bytes_to_send, int block_s
 }
 */
 //============================================================
+//  renderer_nogpu::nogpu_cpu_sample
+//  CPU seconds used by this process, and busy/total jiffies of the
+//  whole machine (Linux /proc/stat); zeros where not available
+//============================================================
+
+void renderer_nogpu::nogpu_cpu_sample(double &proc_s, double &sys_busy, double &sys_total)
+{
+	proc_s = sys_busy = sys_total = 0;
+#ifndef _WIN32
+	struct rusage ru;
+	if (!getrusage(RUSAGE_SELF, &ru))
+		proc_s = ru.ru_utime.tv_sec + ru.ru_utime.tv_usec / 1e6 + ru.ru_stime.tv_sec + ru.ru_stime.tv_usec / 1e6;
+	FILE *f = fopen("/proc/stat", "r");
+	if (f)
+	{
+		unsigned long long v[8] = {};
+		if (fscanf(f, "cpu %llu %llu %llu %llu %llu %llu %llu %llu", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7]) == 8)
+		{
+			const double idle = double(v[3] + v[4]);
+			sys_total = double(v[0] + v[1] + v[2] + v[3] + v[4] + v[5] + v[6] + v[7]);
+			sys_busy = sys_total - idle;
+		}
+		fclose(f);
+	}
+#endif
+}
+
+//============================================================
+//  renderer_nogpu::nogpu_blit_delta
+//  LZ4 / LZ4HC with delta frames, same wire format as groovymister:
+//  CMD_BLIT_FIELD_VSYNC (13 bytes with the delta flag, 12 without,
+//  9 for an unchanged frame). The delta is the byte-wise wrapping
+//  difference to the last frame of the same field; the core adds it
+//  to that field's framebuffer. Used only when it is at least 5 %
+//  smaller than the plain frame; a plain frame every 60 frames.
+//============================================================
+
+void renderer_nogpu::nogpu_blit_delta(uint32_t frame, uint16_t width, uint16_t height, osd_ticks_t enc_start)
+{
+	const bool hc = (m_compression == NOGPU_COMPRESSION_LZ4HC_DELTA);
+	const int size = width * height * 3;
+	const bool fields = m_current_mode.interlace && m_interlaced_fb;
+	const uint8_t field = fields ? (m_field & 1) : 0;
+	const int slot = field;
+	const int bound = LZ4_COMPRESSBOUND(MAX_BUFFER_HEIGHT * MAX_BUFFER_WIDTH * 3);
+	const bool have_ref = m_prev_valid[slot] && m_prev_w[slot] == width && m_prev_h[slot] == height && m_keyframe_cnt[slot] < 60;
+
+	uint8_t pkt[13];
+	pkt[0] = CMD_BLIT_FIELD_VSYNC;
+	memcpy(&pkt[1], &frame, 4);
+	pkt[5] = field;
+	const uint16_t vsync = video_config.syncrefresh ? m_vsync_scanline : 0;
+	memcpy(&pkt[6], &vsync, 2);
+
+	// unchanged frame: header only, the core shows the field buffer again
+	if (have_ref && !memcmp(m_fb, m_fb_prev[slot], size))
+	{
+		pkt[8] = 0x01;
+		nogpu_send_command((char *)pkt, 9);
+		m_keyframe_cnt[slot]++;
+		if (m_stats)
+			nogpu_stats(size, 9, osd_ticks() - enc_start);
+		return;
+	}
+
+	int c_size = hc ? LZ4_compress_HC(m_fb, m_fb_compressed, size, bound, LZ4HC_CLEVEL_DEFAULT)
+	                : LZ4_compress_default(m_fb, m_fb_compressed, size, bound);
+	int c_delta = 0;
+	if (have_ref && c_size > 0)
+	{
+		const uint8_t *cur = (const uint8_t *)m_fb;
+		const uint8_t *prev = (const uint8_t *)m_fb_prev[slot];
+		uint8_t *d = (uint8_t *)m_fb_delta;
+		for (int i = 0; i < size; i++)
+			d[i] = uint8_t(cur[i] - prev[i]);
+		c_delta = hc ? LZ4_compress_HC(m_fb_delta, m_fb_compressed_delta, size, bound, LZ4HC_CLEVEL_DEFAULT)
+		             : LZ4_compress_default(m_fb_delta, m_fb_compressed_delta, size, bound);
+	}
+
+	memcpy(m_fb_prev[slot], m_fb, size);
+	m_prev_valid[slot] = true;
+	m_prev_w[slot] = width;
+	m_prev_h[slot] = height;
+
+	const bool use_delta = c_delta > 0 && c_delta < c_size * 0.95;
+	m_keyframe_cnt[slot] = use_delta ? m_keyframe_cnt[slot] + 1 : 0;
+
+	if (c_size <= 0)
+	{
+		nogpu_send_command((char *)pkt, 8);
+		nogpu_send_mtu(&m_fb[0], size, 1472);
+		if (m_stats)
+			nogpu_stats(size, 0, osd_ticks() - enc_start);
+		return;
+	}
+
+	const uint32_t sent = use_delta ? c_delta : c_size;
+	memcpy(&pkt[8], &sent, 4);
+	if (use_delta)
+	{
+		pkt[12] = 0x01;
+		nogpu_send_command((char *)pkt, 13);
+		nogpu_send_mtu(&m_fb_compressed_delta[0], c_delta, 1472);
+	}
+	else
+	{
+		nogpu_send_command((char *)pkt, 12);
+		nogpu_send_mtu(&m_fb_compressed[0], c_size, 1472);
+	}
+	if (m_stats)
+		nogpu_stats(size, sent, osd_ticks() - enc_start);
+}
+
+//============================================================
+//  renderer_nogpu::nogpu_stats
+//  -mister_stats: once per second, show and log the compression
+//  ratio (average and worst frame), the data rate on the wire and
+//  the encode time per frame
+//============================================================
+
+void renderer_nogpu::nogpu_stats(uint32_t raw_size, uint32_t sent_size, osd_ticks_t enc_ticks)
+{
+	const bool fallback = (m_compression != 0 && sent_size == 0);
+	const double sent = (m_compression == 0 || sent_size == 0) ? raw_size : sent_size;
+	const double ratio = raw_size / sent;
+	const osd_ticks_t now = osd_ticks();
+
+	if (m_st_frames == 0)
+	{
+		m_st_start = now;
+		m_st_min_ratio = ratio;
+		nogpu_cpu_sample(m_st_cpu0, m_st_sys_busy0, m_st_sys_total0);
+	}
+	m_st_frames++;
+	m_st_raw += raw_size;
+	m_st_sent += sent;
+	m_st_enc_ms += get_ms(enc_ticks);
+	m_st_min_ratio = std::min(m_st_min_ratio, ratio);
+	if (fallback)
+		m_st_fallback++;
+
+	const double secs = double(now - m_st_start) / osd_ticks_per_second();
+	if (secs < 1.0)
+		return;
+
+	static const char *const names[] = { "RAW", "LZ4", "LZ4HC", "NLC", "QOI", "LZ4+delta", "LZ4HC+delta" };
+	const char *name = (m_compression == NOGPU_COMPRESSION_QOI && m_qoi_skip) ? "QOI+skip" : (m_compression >= 0 && m_compression <= 6) ? names[m_compression] : "?";
+	char nlc_level[8] = "";
+	if (m_compression == NOGPU_COMPRESSION_NLC)
+		snprintf(nlc_level, sizeof(nlc_level), "%d", m_nlc_near);
+
+	// CPU: this process in % of one core, and the whole PC in % of all cores
+	double cpu1 = 0, busy1 = 0, total1 = 0;
+	nogpu_cpu_sample(cpu1, busy1, total1);
+	const double proc_pct = (cpu1 - m_st_cpu0) / secs * 100.0;
+	const double sys_pct = (total1 > m_st_sys_total0) ? (busy1 - m_st_sys_busy0) / (total1 - m_st_sys_total0) * 100.0 : 0.0;
+
+	char text[200];
+	snprintf(text, sizeof(text), "%s%s %.1fx (min %.1fx)  %.1f Mbit/s  enc %.2f ms  %d fps  CPU %.0f%% (PC %.0f%%)%s",
+		name, nlc_level, m_st_raw / m_st_sent, m_st_min_ratio,
+		m_st_sent * 8.0 / secs / 1e6, m_st_enc_ms / m_st_frames, int(m_st_frames / secs + 0.5),
+		proc_pct, sys_pct,
+		m_st_fallback ? util::string_format("  raw frames %d", m_st_fallback).c_str() : "");
+	window().machine().popmessage("%s", text);
+	osd_printf_info("nogpu stats: %s\n", text);
+
+	m_st_frames = 0;
+	m_st_raw = m_st_sent = m_st_enc_ms = 0;
+	m_st_fallback = 0;
+}
+
+//============================================================
 //  renderer_nogpu::nogpu_blit
 //============================================================
 
@@ -925,6 +1175,8 @@ void renderer_nogpu::nogpu_blit(uint32_t frame, uint16_t width, uint16_t height)
 	// Update vsync scanline
 	m_vsync_scanline = std::min<int>((m_current_mode.vtotal) * m_frame_delay + vsync_offset + 1, m_current_mode.vtotal);
 
+	const osd_ticks_t enc_start = osd_ticks();
+
 	if (m_compression == 1)
 		compressed_data_size = LZ4_compress_default((char *)&m_fb[0], (char *)&m_fb_compressed[0], width * height * 3, LZ4_COMPRESSBOUND(MAX_BUFFER_HEIGHT * MAX_BUFFER_WIDTH * 3));
 	else if(m_compression == 2)
@@ -944,6 +1196,46 @@ void renderer_nogpu::nogpu_blit(uint32_t frame, uint16_t width, uint16_t height)
 		const int encoded = nlc_encode((const uint8_t *)&m_fb[0], (uint8_t *)&m_fb_compressed[0], sizeof(m_fb_compressed), &np);
 		compressed_data_size = (encoded > 0) ? encoded : 0; // 0: send this frame raw
 	}
+	else if (m_compression == NOGPU_COMPRESSION_QOI)
+	{
+		// every line on its own: 2-byte header + QOI, or the raw line when QOI is not shorter.
+		// With skipping, a line equal to the last sent frame is only the header 0x8000 and the
+		// core keeps it in the framebuffer. Needs word-aligned lines; interlaced fields compare
+		// against the last field of the same parity. A full frame goes out every 60 frames per
+		// slot and after any size change.
+		const size_t line_bytes = width * 3;
+		const int slot = (m_current_mode.interlace && m_interlaced_fb) ? (frame & 1) : 0;
+		const bool skip = m_qoi_skip && m_prev_valid[slot] && m_prev_w[slot] == width && m_prev_h[slot] == height
+			&& (line_bytes % 8) == 0 && m_keyframe_cnt[slot] < 60;
+		for (int y = 0; y < height; y++)
+		{
+			const char *line = &m_fb[y * line_bytes];
+			if (skip && !memcmp(line, &m_fb_prev[slot][y * line_bytes], line_bytes))
+			{
+				m_fb_compressed[compressed_data_size++] = 0x00;
+				m_fb_compressed[compressed_data_size++] = (char)0x80;
+			}
+			else
+				compressed_data_size += qoiline_encode((const uint8_t *)line, width, QOILINE_RGB888, (uint8_t *)&m_fb_compressed[compressed_data_size]);
+		}
+		if (m_qoi_skip)
+		{
+			memcpy(m_fb_prev[slot], m_fb, line_bytes * height);
+			m_prev_valid[slot] = true;
+			m_prev_w[slot] = width;
+			m_prev_h[slot] = height;
+			m_keyframe_cnt[slot] = skip ? m_keyframe_cnt[slot] + 1 : 0;
+		}
+	}
+
+	if (m_compression == NOGPU_COMPRESSION_LZ4_DELTA || m_compression == NOGPU_COMPRESSION_LZ4HC_DELTA)
+	{
+		nogpu_blit_delta(frame, width, height, enc_start);
+		return;
+	}
+
+	if (m_stats)
+		nogpu_stats(width * height * 3, compressed_data_size, osd_ticks() - enc_start);
 
 	// Send CMD_BLIT
 	cmd_blit_vsync command;

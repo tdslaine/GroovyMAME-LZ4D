@@ -23,7 +23,7 @@ MiSTer. Without the GroovyNLC core, use `mister_compression none` or `lz4`.
   a CRT.
 - **Gigabit Ethernet** between PC and MiSTer. A switch is fine, Wi-Fi is not.
 - A **static IP** on the MiSTer (set it in your router or on the MiSTer). The
-  examples here use `192.168.1.161`.
+  examples here use `192.168.1.100`.
 
 ### 1. MiSTer: install the GroovyNLC core
 
@@ -74,14 +74,14 @@ them.
 On the command line:
 
 ```
-mame -video mister -mister_ip 192.168.1.161 -mister_compression nlc ddonpach
+mame -video mister -mister_ip 192.168.1.100 -mister_compression nlc ddonpach
 ```
 
 Or in `mame.ini` (this is the setup we play with):
 
 ```
 video                     mister
-mister_ip                 192.168.1.161
+mister_ip                 192.168.1.100
 mister_compression        nlc
 aspect                    4:3
 keyboardprovider          mister
@@ -158,7 +158,7 @@ twice. With the fix it is 60 s.
 | Files | `src/osd/modules/render/drawnogpu.cpp`, `src/osd/modules/render/nlc_codec.{h,cpp}`, `src/osd/modules/lib/osdobj_common.cpp`, `scripts/src/osd/modules.lua` |
 | What | Near-lossless video codec for the nogpu link: RGB888 to YCoCg-R, MED prediction, Rice packing, 16 px tiles. Frames are smaller than raw, so less data goes over the network to the MiSTer. |
 | Needs | The **GroovyNLC core** on the MiSTer ([verbst/Groovy_MiSTer](https://github.com/verbst/Groovy_MiSTer)). The official Groovy core can't decode NLC. It ignores the extra bits in `CMD_INIT` and receives raw frames, so nothing breaks, but you get no compression. |
-| Codec | `nlc_codec.h` and `nlc_codec.cpp` are copied unchanged from [verbst/Groovy_MiSTer](https://github.com/verbst/Groovy_MiSTer) `api/` (commit `e60f52ad`, 2026-09-11, GPL-2.0). The encoder in that repo is the reference the core's FPGA decoder is checked against, bit for bit. |
+| Codec | `nlc_codec.h` and `nlc_codec.cpp` are taken unchanged (only a license header added) from [verbst/Groovy_MiSTer](https://github.com/verbst/Groovy_MiSTer) `api/` (commit `e60f52ad`, 2026-09-11, GPL-2.0). The encoder in that repo is the reference the core's FPGA decoder is checked against, bit for bit. |
 | Glue | Option parsing, the `CMD_INIT` compression byte (codec 2, near level, YCoCg, decode mode 2, Rice) and the call to `nlc_encode()` in `nogpu_blit()`. The bit layout follows verbst's RetroArch GroovyNLC fork, so the core sees the same data from both. If a frame doesn't fit, it is sent raw for that frame. |
 
 Values:
@@ -241,9 +241,12 @@ with GroovyMAME or MAME.
 ## License
 
 Same as MAME: the project as a whole is under the GNU General Public License,
-version 2 or later. Individual files may be under other licenses, see
-[COPYING](COPYING) and the file headers. `nlc_codec.{h,cpp}` come from a
-GPL-2.0 repository.
+version 2. Individual files may be under other licenses, see
+[COPYING](COPYING), the file headers and the full license texts in
+[docs/legal](docs/legal). `nlc_codec.{h,cpp}` come from the GPL-2.0 repository
+verbst/Groovy_MiSTer and are marked `license:GPL-2.0`. The release archives
+contain `COPYING` and `docs/legal` as well; the source for each release is the
+commit its tag points to.
 
 MAME is a registered trademark of Gregory Ember. The original readmes are in
 [README-GroovyMAME.md](README-GroovyMAME.md) and [README-MAME.md](README-MAME.md).

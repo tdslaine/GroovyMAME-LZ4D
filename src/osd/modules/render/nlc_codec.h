@@ -1,3 +1,7 @@
+// license:GPL-2.0
+// copyright-holders:verbst
+// Taken unchanged from https://github.com/verbst/Groovy_MiSTer api/nlc_codec.h
+// (commit e60f52ad1d83, 2026-09-11); only these four header lines were added.
 // nlc_codec.h: near-lossless codec for Groovy_MiSTer (reference model)
 //
 // This is the single source of truth for the new deterministic near-lossless

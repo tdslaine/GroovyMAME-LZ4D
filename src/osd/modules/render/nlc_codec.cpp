@@ -1,3 +1,7 @@
+// license:GPL-2.0
+// copyright-holders:verbst
+// Taken unchanged from https://github.com/verbst/Groovy_MiSTer api/nlc_codec.cpp
+// (commit e60f52ad1d83, 2026-09-11); only these four header lines were added.
 // nlc_codec.cpp: near-lossless codec for Groovy_MiSTer (reference model)
 // See nlc_codec.h for the pipeline and bit-order spec.
 //

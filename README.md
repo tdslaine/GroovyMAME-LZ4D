@@ -10,6 +10,83 @@ GroovyMAME 0.289 (Switchres 2.22f) with three small additions for playing on a
 Apart from these three commits, this is GroovyMAME unchanged. If you don't play
 on a MiSTer, use the official GroovyMAME instead.
 
+> **Branch `qoi` (this branch) is an experimental test build** on top of that:
+> LZ4/LZ4HC delta frames, QOI per line, a stats overlay and Ctrl+C support.
+> See [Experimental: codec test build](#experimental-codec-test-build) below.
+> Not part of the release, not yet checked on a CRT for every mode.
+
+---
+
+## Experimental: codec test build
+
+Everything in this section is on branch `qoi` only.
+
+### New options
+
+| Option | What it does | Core needed |
+|---|---|---|
+| `-mister_compression lz4_delta` | LZ4, and each frame may be sent as the byte-wise difference to the previous frame of the same field ("delta frame"); the core adds it back onto its framebuffer. Used only when it is at least 5 % smaller than the plain frame, a plain frame every 60 frames. Unchanged frames are sent as a 9-byte "duplicate" header only. Same wire format as psakhis' groovymister lib (`CMD_BLIT_FIELD_VSYNC`, delta flag), as used by MiSTerCast. | stock Groovy / GroovyNLC core |
+| `-mister_compression lz4hc_delta` | Same with LZ4HC. Packs best, but encoding is slow (see results). | stock Groovy / GroovyNLC core |
+| `-mister_compression qoi` | QOI per line ([substring/GroovyTaNGer](https://github.com/substring/GroovyTaNGer) `docs/qoi_line_format.md`), plus lines unchanged since the last frame of the same field are sent as a 2-byte header (`0x8000`) only. | QOI test core (CMD_INIT codec 3), not published yet |
+| `-mister_compression qoi_noskip` | QOI per line without the line skip. | QOI test core |
+| `-mister_stats` | Once per second, on screen and in the log: codec, compression ratio (average and worst frame), Mbit/s on the wire, encode time per frame, fps, CPU load of GroovyMAME (% of one core) and of the whole PC (Linux). | any |
+| Ctrl+C / SIGTERM | Quits cleanly with `-video mister` on Linux (before, SDL never saw the signal because there is no window). | any |
+
+The existing values (`none`, `lz4`, `lz4hc`, `nlc`, `nlc0`–`nlc3`) are unchanged.
+
+### Results so far
+
+Measured with `-mister_stats`, GroovyMAME on a Linux desktop PC sending to a
+DE10-Nano over gigabit. Ratio = total raw bytes / total sent bytes (higher is
+better). LZ4/LZ4HC/NLC (and their delta variants) ran on the stock GroovyNLC
+core; QOI on the QOI test core.
+
+**Real gameplay, kof98 240p** (same savestate and the same pseudo-random
+inputs for every run, so every codec gets identical frames, 60 s):
+
+| | RAW | LZ4 | LZ4+delta | LZ4HC | LZ4HC+delta | QOI | QOI+skip | NLC |
+|---|---|---|---|---|---|---|---|---|
+| ratio | 1.0x | 3.1x | **5.4x** | 4.8x | 7.7x | 3.0x | 4.0x | 1.8x |
+| worst frame | 1.0x | 2.7x | 2.7x | 4.2x | 4.2x | 2.6x | 2.6x | 1.7x |
+| avg Mbit/s | 103.5 | 33.6 | **19.0** | 21.8 | 12.4 | 34.8 | 26.2 | 57.1 |
+| encode ms | – | 0.28 | 0.57 | 8.4 | 15.0 | 0.54 | 0.42 | 1.23 |
+| fps | 60 | 60 | 60 | 60 | **55** | 60 | 60 | 60 |
+| CPU (% of a core) | 24 | 24 | 24 | 70 | 91 | 25 | 24 | 41 |
+
+**Attract mode, other games** (60–90 s each; attract mode has many still
+screens, which makes the delta and skip variants look better than real play):
+
+| | LZ4 | LZ4+delta | LZ4HC | LZ4HC+delta | QOI | QOI+skip | NLC |
+|---|---|---|---|---|---|---|---|
+| ddonpach 240p | 5.8x | 83x | 9.0x | 124x | 4.0x | 25x | 2.4x |
+| sfa3 240p | 8.8x | 18x | 16.3x | 31x* | 8.7x | 13.6x | 3.1x |
+| vf2 496x384 (Model 2) | 4.1x | 4.2x | 6.5x* | 6.6x* | 4.5x | 4.7x | 3.1x |
+| daytona 496x384 (Model 2) | 3.5x | 3.6x | 5.1x* | 5.3x* | 3.7x | 3.8x | 2.7x |
+| mvsc2 640x480i (Naomi) | 7.7x | 8.8x | 11.5x* | 14.7x* | 7.2x | 7.8x | 3.8x |
+| mvsc2 640x480p (Naomi) | 5.7x | 6.1x | 7.3x* | 8.8x* | 6.0x | 6.4x | 4.1x |
+
+\* encode too slow, frames drop (for example vf2 59 → 21 fps with LZ4HC+delta).
+mvsc2 runs at about 37 fps in MAME on this PC whatever the codec.
+
+Offline, on 60-frame sections with movement only: ddonpach 2.7x → 3.3x,
+esprade 2.7x → 4.4x, kof98 5.1x → 15.9x, sfa3 7.8x → 11.2x (LZ4 → LZ4+delta).
+
+### Findings
+
+- **LZ4+delta** is the best option that keeps full speed: never worse than
+  plain LZ4, much better wherever parts of the picture stand still, and the
+  stock core already decodes it. GroovyMAME simply never sent it.
+- **QOI** is about even with plain LZ4 per frame; its line skip helps less
+  than full delta because a line only counts as unchanged if all of it is.
+- **LZ4HC(+delta)** packs best but is too slow from Model 2 / 480 lines up.
+- **NLC** had the lowest ratio and the slowest encode on these 2D and Model 2
+  games; it is built for 480p 3D, video and dithering, and only on the
+  hardest 480p frames was it best (worst frame 1.9x, lowest peak).
+- **Worst frames** (scene changes) are the same with and without delta/skip.
+- **240p** raw is about 110 Mbit/s, so on gigabit any codec works. 480p raw
+  peaks around 470 Mbit/s at 37 fps (about 750 at 60 fps), there compression
+  matters.
+
 ---
 
 ## Setup
@@ -233,7 +310,9 @@ Ready-made Linux and Windows x64 builds are on the
   The emusync audio/video sync is by intealls and Calamity.
 - **Groovy MiSTer core**: psakhis, [psakhis/Groovy_MiSTer](https://github.com/psakhis/Groovy_MiSTer)
 - **GroovyNLC codec and core**: verbst, [verbst/Groovy_MiSTer](https://github.com/verbst/Groovy_MiSTer)
-- **This fork** (audio fix, NLC integration in GroovyMAME, nonag): tdslaine
+- **QOI line format, encoder and FPGA decoder**: substring, [substring/GroovyTaNGer](https://github.com/substring/GroovyTaNGer) (`qoiline.h` and the decoder are MIT)
+- **Delta frame format**: psakhis' groovymister lib, as used by MiSTerCast
+- **This fork** (audio fix, NLC integration in GroovyMAME, nonag; on branch `qoi`: delta frames, QOI glue, stats, Ctrl+C): tdslaine
 
 Bugs in the three changes above belong here. Everything else belongs upstream
 with GroovyMAME or MAME.

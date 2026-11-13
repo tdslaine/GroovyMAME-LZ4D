@@ -25,6 +25,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <csignal>
 #endif
 
 // MAMEOS headers
@@ -44,6 +45,14 @@
 #include "qoiline.h"
 
 #include <switchres/switchres.h>
+
+#ifndef _WIN32
+// Ctrl+C / kill: with -video mister there is no SDL window, so SDL's quit event never
+// reaches MAME and the process could only be killed hard. Catch the signals ourselves
+// and ask the machine to exit at the next frame.
+static volatile std::sig_atomic_t s_nogpu_quit = 0;
+static void nogpu_signal_handler(int) { s_nogpu_quit = 1; }
+#endif
 
 #define MAX_BUFFER_WIDTH 768
 #define MAX_BUFFER_HEIGHT 576
@@ -395,6 +404,14 @@ int renderer_nogpu::draw(const int update)
 	}
 	#endif
 
+	#ifndef _WIN32
+	if (s_nogpu_quit)
+	{
+		s_nogpu_quit = 0;
+		window().machine().schedule_exit();
+	}
+	#endif
+
 	// initialize nogpu right before first blit
 	if (m_first_blit && !m_initialized)
 	{
@@ -488,6 +505,14 @@ int renderer_nogpu::draw(const int update)
 bool renderer_nogpu::nogpu_init()
 {
 	int result;
+
+	#ifndef _WIN32
+		struct sigaction sa = {};
+		sa.sa_handler = nogpu_signal_handler;
+		sigemptyset(&sa.sa_mask);
+		sigaction(SIGINT, &sa, nullptr);
+		sigaction(SIGTERM, &sa, nullptr);
+	#endif
 
 	#if defined(OSD_WINDOWS)
 		windows_options &options = downcast<windows_options &>(window().machine().options());

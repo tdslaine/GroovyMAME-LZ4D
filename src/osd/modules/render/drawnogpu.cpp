@@ -26,6 +26,8 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <csignal>
+#include <sys/resource.h>
+#include <cstdio>
 #endif
 
 // MAMEOS headers
@@ -211,6 +213,7 @@ private:
 	osd_ticks_t m_st_start = 0;
 	double m_st_raw = 0, m_st_sent = 0, m_st_enc_ms = 0, m_st_min_ratio = 0;
 	int m_st_frames = 0, m_st_fallback = 0;
+	double m_st_cpu0 = 0, m_st_sys_busy0 = 0, m_st_sys_total0 = 0;
 	bool m_is_internal_fe = false;
 	bool m_autofilter = false;
 	bool m_bilinear = false;
@@ -262,6 +265,7 @@ private:
 	bool nogpu_wait_status(nogpu_blit_status *status, double timeout);
 	void nogpu_register_frametime(osd_ticks_t frametime);
 	void nogpu_stats(uint32_t raw_size, uint32_t sent_size, osd_ticks_t enc_ticks);
+	static void nogpu_cpu_sample(double &proc_s, double &sys_busy, double &sys_total);
 
 	// emusync manager
 	emusync &m_sync;
@@ -953,6 +957,34 @@ void renderer_nogpu::nogpu_send_lz4(char *buffer, int bytes_to_send, int block_s
 }
 */
 //============================================================
+//  renderer_nogpu::nogpu_cpu_sample
+//  CPU seconds used by this process, and busy/total jiffies of the
+//  whole machine (Linux /proc/stat); zeros where not available
+//============================================================
+
+void renderer_nogpu::nogpu_cpu_sample(double &proc_s, double &sys_busy, double &sys_total)
+{
+	proc_s = sys_busy = sys_total = 0;
+#ifndef _WIN32
+	struct rusage ru;
+	if (!getrusage(RUSAGE_SELF, &ru))
+		proc_s = ru.ru_utime.tv_sec + ru.ru_utime.tv_usec / 1e6 + ru.ru_stime.tv_sec + ru.ru_stime.tv_usec / 1e6;
+	FILE *f = fopen("/proc/stat", "r");
+	if (f)
+	{
+		unsigned long long v[8] = {};
+		if (fscanf(f, "cpu %llu %llu %llu %llu %llu %llu %llu %llu", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7]) == 8)
+		{
+			const double idle = double(v[3] + v[4]);
+			sys_total = double(v[0] + v[1] + v[2] + v[3] + v[4] + v[5] + v[6] + v[7]);
+			sys_busy = sys_total - idle;
+		}
+		fclose(f);
+	}
+#endif
+}
+
+//============================================================
 //  renderer_nogpu::nogpu_stats
 //  -mister_stats: once per second, show and log the compression
 //  ratio (average and worst frame), the data rate on the wire and
@@ -970,6 +1002,7 @@ void renderer_nogpu::nogpu_stats(uint32_t raw_size, uint32_t sent_size, osd_tick
 	{
 		m_st_start = now;
 		m_st_min_ratio = ratio;
+		nogpu_cpu_sample(m_st_cpu0, m_st_sys_busy0, m_st_sys_total0);
 	}
 	m_st_frames++;
 	m_st_raw += raw_size;
@@ -989,10 +1022,17 @@ void renderer_nogpu::nogpu_stats(uint32_t raw_size, uint32_t sent_size, osd_tick
 	if (m_compression == NOGPU_COMPRESSION_NLC)
 		snprintf(nlc_level, sizeof(nlc_level), "%d", m_nlc_near);
 
-	char text[160];
-	snprintf(text, sizeof(text), "%s%s %.1fx (min %.1fx)  %.1f Mbit/s  enc %.2f ms  %d fps%s",
+	// CPU: this process in % of one core, and the whole PC in % of all cores
+	double cpu1 = 0, busy1 = 0, total1 = 0;
+	nogpu_cpu_sample(cpu1, busy1, total1);
+	const double proc_pct = (cpu1 - m_st_cpu0) / secs * 100.0;
+	const double sys_pct = (total1 > m_st_sys_total0) ? (busy1 - m_st_sys_busy0) / (total1 - m_st_sys_total0) * 100.0 : 0.0;
+
+	char text[200];
+	snprintf(text, sizeof(text), "%s%s %.1fx (min %.1fx)  %.1f Mbit/s  enc %.2f ms  %d fps  CPU %.0f%% (PC %.0f%%)%s",
 		name, nlc_level, m_st_raw / m_st_sent, m_st_min_ratio,
 		m_st_sent * 8.0 / secs / 1e6, m_st_enc_ms / m_st_frames, int(m_st_frames / secs + 0.5),
+		proc_pct, sys_pct,
 		m_st_fallback ? util::string_format("  raw frames %d", m_st_fallback).c_str() : "");
 	window().machine().popmessage("%s", text);
 	osd_printf_info("nogpu stats: %s\n", text);

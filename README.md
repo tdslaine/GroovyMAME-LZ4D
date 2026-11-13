@@ -49,6 +49,20 @@ already too slow at 240p. NLC is made for video and 3D, not for 2D sprites.
 Scene changes (worst frame) cost the same with or without delta. More games
 (attract mode, 3D and 480i/480p) are in [Results so far](#results-so-far).
 
+## Which codec to use
+
+| Situation | Use | Why |
+|---|---|---|
+| 2D games at 240p (shmups, fighters, platformers), stock or GroovyNLC core | **`lz4_delta`** | Best ratio at full speed; static backgrounds, HUDs and menus cost almost nothing. |
+| 3D games (Model 2 and similar) or anything where the whole screen changes every frame | `lz4` or `lz4_delta` | Delta gains little there, but never loses; both cost about the same. |
+| 480i / 480p (Naomi, 31 kHz) | `lz4_delta` | Raw 480p peaks around 470 Mbit/s; LZ4(+delta) brings it to ~45–50. |
+| Fast PC, 240p only, want the smallest stream | `lz4hc_delta` | Packs most, but encodes 3–15 ms per frame; drops frames from Model 2 / 480 lines up. |
+| Video-like content (FMV, film, heavy dithering) with the GroovyNLC core | `nlc` | Built for that kind of picture; on 2D sprites it is the weakest option. |
+| Gigabit LAN, 240p, don't care about bandwidth | `none` | ~110 Mbit/s raw is fine on gigabit; lowest CPU, but no gain in transfer time. |
+| Testing QOI | `qoi` / `qoi_noskip` | Needs the QOI test core; about even with LZ4, not recommended. |
+
+Turn on `-mister_stats` to see what your game actually gets.
+
 ---
 
 ## LZ4 delta, stats and the other new options
